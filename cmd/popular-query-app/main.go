@@ -147,9 +147,8 @@ func hashFS(filesystem fs.FS) string {
 // etag value. If the client sends the same etag, the response is not generated
 // again.
 func withETagCache(etag string, weak bool) func(next http.Handler) http.Handler {
-	headerValue := etag
 	if weak {
-		headerValue = "W/" + headerValue
+		etag = "W/" + etag
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -160,7 +159,7 @@ func withETagCache(etag string, weak bool) func(next http.Handler) http.Handler 
 				return
 			}
 
-			w.Header().Set("ETag", headerValue)
+			w.Header().Set("ETag", etag)
 			next.ServeHTTP(w, r)
 		})
 	}
