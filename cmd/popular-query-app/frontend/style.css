@@ -1,0 +1,195 @@
+:root {
+  --border-radius: 4px;
+  --error-color-rgb: 255, 51, 51;
+  --padding: 1rem;
+  --padding-large: 3.5rem;
+  --padding-small: 0.5rem;
+}
+
+html {
+  display: flex;
+  min-height: 100%;
+}
+
+body {
+  margin: auto;
+  background-color: #222;
+}
+
+body,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "Nunito", sans-serif;
+  line-height: 1.5;
+}
+
+main > section,
+main > hgroup {
+  margin: var(--padding-large) 0;
+  padding: 0;
+}
+
+main > hgroup > * {
+  margin: 0;
+}
+
+input,
+button {
+  margin: 0;
+  padding: var(--padding);
+  border-radius: var(--border-radius);
+  transition: all 0.1s ease-in-out;
+}
+
+button {
+  border: none;
+}
+
+input:disabled,
+button:disabled {
+  opacity: 0.5;
+}
+
+p {
+  margin: var(--padding) 0;
+}
+
+img.icon {
+  width: 1.25em;
+  height: 1.25em;
+  vertical-align: middle;
+  margin: 0;
+}
+
+footer {
+  margin-top: var(--padding-large);
+  padding: var(--padding);
+  text-align: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 0.8em;
+
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+footer > * > * {
+  margin: 0;
+}
+
+footer > :first-child {
+  text-align: left;
+}
+
+footer > :last-child {
+  text-align: right;
+}
+
+@media (max-width: 400px) {
+  footer {
+    grid-template-columns: 1fr;
+  }
+
+  footer > :first-child {
+    text-align: center;
+  }
+
+  footer > :last-child {
+    text-align: center;
+  }
+}
+
+.hypnohub-logo {
+  width: 100%;
+  max-width: 500px;
+}
+
+.error-box {
+  color: rgb(var(--error-color-rgb));
+  background-color: rgba(var(--error-color-rgb), 0.1);
+  border: 1px solid rgba(var(--error-color-rgb), 0.5);
+  border-radius: var(--border-radius);
+  padding: var(--padding);
+}
+
+.error-box:empty {
+  display: none;
+}
+
+.error-box::before {
+  content: "⚠️  Error: ";
+  font-weight: bold;
+}
+
+#query-generate .time-period-buttons {
+  display: flex;
+  justify-content: space-evenly;
+  gap: var(--padding);
+  margin: var(--padding) 0;
+}
+
+@media (max-width: 600px) {
+  #query-generate .time-period-buttons {
+    flex-direction: column;
+  }
+}
+
+#query-generate .time-period-buttons button:nth-child(1) {
+  --color-rgb: 255, 211, 192;
+}
+
+#query-generate .time-period-buttons button:nth-child(2) {
+  --color-rgb: 180, 237, 234;
+}
+
+#query-generate .time-period-buttons button:nth-child(3) {
+  --color-rgb: 255, 216, 232;
+}
+
+#query-generate .time-period-buttons button {
+  flex: 1;
+  font-size: 1.2em;
+  font-weight: bold;
+  background-color: rgba(var(--color-rgb), 0.7);
+  border: 2px solid rgba(var(--color-rgb), 1);
+}
+
+#query-generate .time-period-buttons button:hover {
+  filter: brightness(0.8) contrast(1.2) saturate(1.5);
+}
+
+#query-generate .time-period-buttons button[data-chosen] {
+  background-color: rgba(var(--color-rgb), 1);
+}
+
+#query-generate .result {
+  display: flex;
+  gap: var(--padding);
+}
+
+#query-generate .result > input {
+  flex: 1;
+  font-family: monospace;
+}
+
+#query-generate .result > button {
+  height: 100%;
+}
+
+#about {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease-out;
+}
+
+#about:target {
+  max-height: 500px;
+}
+
+#about-section .help,
+#about-section .help button {
+  width: 100%;
+}

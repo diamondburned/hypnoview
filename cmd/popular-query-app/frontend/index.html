@@ -1,0 +1,88 @@
+<!doctype html>
+<title>Hypnohub Popular Query Generator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Hypnohub Popular Query Generator" />
+<meta name="author" content="diamondburned" />
+<link rel="icon" href="/favicon.png" type="image/png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://necolas.github.io/normalize.css/8.0.1/normalize.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sakura.css@1.5.0/css/sakura-vader.css" />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;700&display=swap"
+/>
+<link rel="stylesheet" href="/style.css" />
+
+<main>
+  <hgroup>
+    <img src="https://hypnohub.net/images/logo_5.png" alt="Hypnohub logo" class="hypnohub-logo" />
+    <h2>Popular Query Generator</h2>
+  </hgroup>
+
+  <noscript>
+    <p class="error-box">
+      <b>Hey!</b> Unfortunately, due to my own laziness, this tool requires JavaScript to work!
+      Please enable JavaScript and refresh the page.
+    </p>
+  </noscript>
+
+  <section id="query-generate">
+    <div class="time-period-buttons">
+      <button id="daily">Daily Popular</button>
+      <button id="weekly">Weekly Popular</button>
+      <button id="monthly">Monthly Popular</button>
+    </div>
+
+    <div class="result">
+      <input id="query-result" type="text" placeholder="Choose a button above!" readonly disabled />
+      <button id="copy-query-result" title="Copy to clipboard">
+        <img
+          src="https://fonts.gstatic.com/s/i/materialicons/content_copy/v17/24px.svg"
+          alt="Copy"
+          class="icon"
+        />
+      </button>
+      <button id="open-hypnohub" title="Open Hypnohub">
+        <img src="/spiral.svg" alt="Open Hypnohub" class="icon" />
+      </button>
+    </div>
+
+    <small> <b>Note:</b> Larger time periods will take longer to load. Be patient! </small>
+
+    <p id="query-error" class="error-box"></p>
+  </section>
+
+  <section id="about-section">
+    <a href="#about" class="help">
+      <button id="help-button"><b>Help!</b> What is this?</button>
+    </a>
+    <div id="about">
+      <p>
+        This is a simple tool that generates query strings for the
+        <a href="https://hypnohub.net">Hypnohub</a> image board. It's meant to replicate the
+        previous Hypnohub's popular queries feature, which is now removed after the site's redesign.
+      </p>
+      <p>
+        To use this tool, simply click on one of the buttons above. The query string will be
+        generated for you. After that, just click the spiraly button!
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>
+    Made by <a href="https://diamondx.pet">Diamond</a>. Source code on
+    <a href="https://github.com/diamondburned/hypnoview">GitHub</a>.
+    <br />
+    Trans rights are human rights.
+  </p>
+  <p>
+    This site is not affiliated with Hypnohub.
+    <br />
+    Use at your own risk.
+  </p>
+</footer>
+
+<script src="/script.js" type="module"></script>
