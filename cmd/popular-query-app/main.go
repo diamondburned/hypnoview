@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
 	"io"
@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -75,6 +74,7 @@ func run(ctx context.Context) error {
 	r := chi.NewMux()
 	r.Route("/api/popular", func(r chi.Router) {
 		r.Use(middleware.Recoverer)
+		r.Use(middleware.NoCache)
 		if verbose {
 			r.Use(httplog.Handler(&httplog.Logger{
 				Logger:  logger.With("component", "http"),
@@ -88,22 +88,15 @@ func run(ctx context.Context) error {
 	})
 
 	r.Group(func(r chi.Router) {
-		var rootFS fs.FS
+		var fs fs.FS
 		if _, err := os.Stat("cmd/popular-query-api/frontend"); err == nil {
 			logger.Info("detected repository layout, using local frontend")
-			rootFS = os.DirFS("cmd/popular-query-api/frontend")
+			fs = os.DirFS("cmd/popular-query-api/frontend")
 		} else {
-			if tag := binaryTag(); tag != "" {
-				logger.Debug("using binary tag", "tag", tag)
-				r.Use(withETagCache(tag, true))
-			} else {
-				logger.Debug("no binary tag, disabling cache")
-				r.Use(middleware.NoCache)
-			}
-			rootFS = frontendFS
+			r.Use(withETagCache(hashFS(frontendFS), true))
+			fs = frontendFS
 		}
-
-		r.Mount("/", http.FileServer(http.FS(rootFS)))
+		r.Mount("/", http.FileServer(http.FS(fs)))
 	})
 
 	logger.Info("server is listening", "addr", httpAddr)
@@ -138,23 +131,16 @@ func handlePopular(updater *popular.PopularQueryUpdater, period popular.TimePeri
 	}
 }
 
-// binaryTag returns a unique tag for the binary, identifying the version and
-// build time.
-func binaryTag() string {
-	buildInfo, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	// Ensure that vcs tags are present in the build info.
-	for _, setting := range buildInfo.Settings {
-		if setting.Key == "vcs.revision" {
-			goto ok
-		}
-	}
-	return ""
-ok:
-	hash := sha1.Sum([]byte(buildInfo.String()))
-	return base64.RawURLEncoding.EncodeToString(hash[:16])
+// hashFS returns a hash of the given filesystem.
+func hashFS(filesystem fs.FS) string {
+	hasher := sha256.New()
+	fs.WalkDir(filesystem, ".", func(path string, d fs.DirEntry, err error) error {
+		b, _ := fs.ReadFile(filesystem, path)
+		hasher.Write(b)
+		return nil
+	})
+	hash := hasher.Sum(nil)[:8]
+	return base64.RawURLEncoding.EncodeToString(hash)
 }
 
 // withETagCache returns a middleware that caches the response using the given
