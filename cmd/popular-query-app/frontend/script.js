@@ -29,7 +29,6 @@ async function generateButtonPress(button) {
 
     queryResult.value = await response.text();
     button.dataset.chosen = true;
-    document.location.hash = period;
   } catch (err) {
     console.error(err);
     queryError.textContent = err.message;
@@ -41,7 +40,7 @@ async function generateButtonPress(button) {
 function disableAllButtons(disabled = true) {
   for (const button of generateButtons) {
     button.disabled = disabled;
-    button.dataset.chosen = undefined;
+    delete button.dataset.chosen;
   }
   queryResult.disabled = disabled;
 }
