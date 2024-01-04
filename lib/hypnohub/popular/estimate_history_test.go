@@ -1,4 +1,4 @@
-package hypnohubutil
+package popular
 
 import (
 	"context"
@@ -31,34 +31,34 @@ func TestEstimatePostHistory(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		limit    PostHistoryEstimateLimit
+		period   TimePeriod
 		accuracy time.Duration
 		wantID   hypnohub.PostID
 		requests int
 	}{
 		{
 			name:     "day",
-			limit:    EstimateDay,
+			period:   Day,
 			accuracy: 0,
 			wantID:   1997,
 			requests: 8,
 		},
 		{
 			name:     "day rough estimate",
-			limit:    EstimateDay,
+			period:   Day,
 			accuracy: 30 * time.Hour,
 			wantID:   1995,
 			requests: 6,
 		},
 		{
 			name:     "week",
-			limit:    EstimateWeek,
+			period:   Week,
 			wantID:   1994,
 			requests: 10,
 		},
 		{
 			name:     "month",
-			limit:    EstimateMonth,
+			period:   Month,
 			wantID:   1990,
 			requests: 12,
 		},
@@ -69,7 +69,7 @@ func TestEstimatePostHistory(t *testing.T) {
 			searcher := searcher.withResetCounter()
 			id, _ := EstimatePostHistory(context.Background(), searcher, EstimatePostOptions{
 				Now:      today,
-				Limit:    test.limit,
+				Period:   test.period,
 				Accuracy: test.accuracy,
 			})
 			if id != test.wantID {

@@ -1,4 +1,4 @@
-package hypnohubutil
+package popular
 
 import (
 	"context"
@@ -10,40 +10,29 @@ import (
 	"libdb.so/hypnoview/lib/hypnohub"
 )
 
-// PostHistoryEstimateLimit is the maximum time period to estimate the post
+// TimePeriod is the maximum time period to estimate the post
 // history for.
-type PostHistoryEstimateLimit int
+type TimePeriod int
 
 const (
-	EstimateDay PostHistoryEstimateLimit = iota
-	EstimateWeek
-	EstimateMonth
+	Day TimePeriod = iota
+	Week
+	Month
 )
 
 // EstimatePostMaxOffsets hard codes the post offsets for each time period.
 // This offset is dependent on how active the site is, so it is not guaranteed
 // to be accurate. Because of this, it is overestimated to be safe.
-var EstimatePostMaxOffsets = map[PostHistoryEstimateLimit]int{
-	EstimateMonth: 3000,
-	EstimateWeek:  800,
-	EstimateDay:   200,
+var EstimatePostMaxOffsets = map[TimePeriod]int{
+	Month: 3000,
+	Week:  800,
+	Day:   200,
 }
 
 // MaxOffset returns the maximum offset for the given time period.
-func (e PostHistoryEstimateLimit) MaxOffset() int {
+// See [EstimatePostMaxOffsets] for more information.
+func (e TimePeriod) MaxOffset() int {
 	return EstimatePostMaxOffsets[e]
-}
-
-// PostHistoryEstimates is a struct that contains the post IDs for the earliest
-// known post for each time period. It serves as an estimate for building
-// popular queries.
-//
-// Note that a field may be nil if the given [PostHistoryEstimateLimit] does not
-// include that time period.
-type PostHistoryEstimates struct {
-	Day   *hypnohub.PostID
-	Week  *hypnohub.PostID
-	Month *hypnohub.PostID
 }
 
 // PostsSearcher is an interface that allows searching for posts.
@@ -59,8 +48,8 @@ var _ PostsSearcher = (*hypnohub.Client)(nil)
 type EstimatePostOptions struct {
 	// Now is the current time. If zero, then [time.Now] is used.
 	Now time.Time
-	// Limit is the maximum time period to estimate the post history for.
-	Limit PostHistoryEstimateLimit
+	// Period is the maximum time period to estimate the post history for.
+	Period TimePeriod
 	// Accuracy is the accuracy of the estimate. If 0, then the estimate is
 	// as accurate as possible.
 	Accuracy time.Duration
@@ -75,22 +64,22 @@ func EstimatePostHistory(ctx context.Context, searcher PostsSearcher, opts Estim
 	}
 
 	var timeThreshold time.Time
-	switch opts.Limit {
-	case EstimateDay:
+	switch opts.Period {
+	case Day:
 		timeThreshold = opts.Now.Add(-24 * time.Hour)
-	case EstimateWeek:
+	case Week:
 		timeThreshold = opts.Now.Add(-7 * 24 * time.Hour)
-	case EstimateMonth:
+	case Month:
 		timeThreshold = opts.Now.Add(-30 * 24 * time.Hour)
 	default:
-		return 0, fmt.Errorf("invalid limit: %v", opts.Limit)
+		return 0, fmt.Errorf("invalid limit: %v", opts.Period)
 	}
 
 	const offsetCount = 2
 	offsets := make([]int, 0, offsetCount)
 	var postID hypnohub.PostID
 
-	_, err := binarySearch(opts.Limit.MaxOffset(), func(i int) (bool, error) {
+	_, err := binarySearch(opts.Period.MaxOffset(), func(i int) (bool, error) {
 		page, err := searcher.SearchPosts(ctx, "", i)
 		if err != nil {
 			// Can't do anything about this error, so just ignore it.

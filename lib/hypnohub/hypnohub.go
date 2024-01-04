@@ -35,29 +35,29 @@ func (u UnixTime) Time() time.Time {
 
 // Post is a single post from the hypnohub API.
 type Post struct {
-	ID            PostID   `xml:"id,attr"`
-	Score         int      `xml:"score,attr"`
-	FileURL       string   `xml:"file_url,attr"`
-	ParentID      PostID   `xml:"parent_id,attr"`
-	Rating        Rating   `xml:"rating,attr"`
-	Tags          TagsList `xml:"tags,attr"`
-	SampleURL     string   `xml:"sample_url,attr"`
-	SampleWidth   int      `xml:"sample_width,attr"`
-	SampleHeight  int      `xml:"sample_height,attr"`
-	PreviewURL    string   `xml:"preview_url,attr"`
-	PreviewWidth  int      `xml:"preview_width,attr"`
-	PreviewHeight int      `xml:"preview_height,attr"`
-	Width         int      `xml:"width,attr"`
-	Height        int      `xml:"height,attr"`
-	MD5           string   `xml:"md5,attr"`
-	CreatorID     int      `xml:"creator_id,attr"`
-	CreatedAt     Date     `xml:"created_at,attr"`
-	ChangedAt     UnixTime `xml:"change,attr"`
-	Status        string   `xml:"status,attr"`
-	Source        string   `xml:"source,attr"`
-	HasNotes      string   `xml:"has_notes,attr"`
-	HasComments   string   `xml:"has_comments,attr"`
-	HasChildren   bool     `xml:"has_children,attr"`
+	ID            PostID   `xml:"id,attr" json:"id"`
+	Score         int      `xml:"score,attr" json:"score"`
+	FileURL       string   `xml:"file_url,attr" json:"file_url"`
+	ParentID      PostID   `xml:"parent_id,attr" json:"parent_id"`
+	Rating        Rating   `xml:"rating,attr" json:"rating"`
+	Tags          TagsList `xml:"tags,attr" json:"tags"`
+	SampleURL     string   `xml:"sample_url,attr" json:"sample_url"`
+	SampleWidth   int      `xml:"sample_width,attr" json:"sample_width"`
+	SampleHeight  int      `xml:"sample_height,attr" json:"sample_height"`
+	PreviewURL    string   `xml:"preview_url,attr" json:"preview_url"`
+	PreviewWidth  int      `xml:"preview_width,attr" json:"preview_width"`
+	PreviewHeight int      `xml:"preview_height,attr" json:"preview_height"`
+	Width         int      `xml:"width,attr" json:"width"`
+	Height        int      `xml:"height,attr" json:"height"`
+	MD5           string   `xml:"md5,attr" json:"md5"`
+	CreatorID     int      `xml:"creator_id,attr" json:"creator_id"`
+	CreatedAt     Date     `xml:"created_at,attr" json:"created_at"`
+	ChangedAt     UnixTime `xml:"change,attr" json:"changed_at"`
+	Status        string   `xml:"status,attr" json:"status"`
+	Source        string   `xml:"source,attr" json:"source"`
+	HasNotes      string   `xml:"has_notes,attr" json:"has_notes"`
+	HasComments   string   `xml:"has_comments,attr" json:"has_comments"`
+	HasChildren   bool     `xml:"has_children,attr" json:"has_children"`
 }
 
 // Date is a date from the hypnohub API.
