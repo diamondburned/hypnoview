@@ -40,7 +40,9 @@ async function generateButtonPress(button) {
 function disableAllButtons(disabled = true) {
   for (const button of generateButtons) {
     button.disabled = disabled;
-    delete button.dataset.chosen;
+    if (disabled) {
+      delete button.dataset.chosen;
+    }
   }
   queryResult.disabled = disabled;
 }
