@@ -3,6 +3,8 @@
 <details>
 <summary>This project is pretty promiscuous! (This means it's 18+).</summary>
 
+---
+
 Hypnoview provides a frontend for the [Hypnohub](https://hypnohub.net) image
 board. Currently, it provides Go libraries for interacting with the Hypnohub
 API, as well as several smaller frontend utilities.
