@@ -38,27 +38,27 @@ func TestEstimatePostHistory(t *testing.T) {
 	}{
 		{
 			name:     "day",
-			period:   Day,
+			period:   Daily,
 			accuracy: 0,
 			wantID:   1997,
 			requests: 8,
 		},
 		{
 			name:     "day rough estimate",
-			period:   Day,
+			period:   Daily,
 			accuracy: 30 * time.Hour,
 			wantID:   1995,
 			requests: 6,
 		},
 		{
 			name:     "week",
-			period:   Week,
+			period:   Weekly,
 			wantID:   1994,
 			requests: 10,
 		},
 		{
 			name:     "month",
-			period:   Month,
+			period:   Monthly,
 			wantID:   1990,
 			requests: 12,
 		},

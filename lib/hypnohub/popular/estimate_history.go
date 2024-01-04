@@ -15,18 +15,18 @@ import (
 type TimePeriod int
 
 const (
-	Day TimePeriod = iota
-	Week
-	Month
+	Daily TimePeriod = iota
+	Weekly
+	Monthly
 )
 
 // EstimatePostMaxOffsets hard codes the post offsets for each time period.
 // This offset is dependent on how active the site is, so it is not guaranteed
 // to be accurate. Because of this, it is overestimated to be safe.
 var EstimatePostMaxOffsets = map[TimePeriod]int{
-	Month: 3000,
-	Week:  800,
-	Day:   200,
+	Monthly: 3000,
+	Weekly:  800,
+	Daily:   200,
 }
 
 // MaxOffset returns the maximum offset for the given time period.
@@ -65,11 +65,11 @@ func EstimatePostHistory(ctx context.Context, searcher PostsSearcher, opts Estim
 
 	var timeThreshold time.Time
 	switch opts.Period {
-	case Day:
+	case Daily:
 		timeThreshold = opts.Now.Add(-24 * time.Hour)
-	case Week:
+	case Weekly:
 		timeThreshold = opts.Now.Add(-7 * 24 * time.Hour)
-	case Month:
+	case Monthly:
 		timeThreshold = opts.Now.Add(-30 * 24 * time.Hour)
 	default:
 		return 0, fmt.Errorf("invalid limit: %v", opts.Period)

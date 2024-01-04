@@ -5,30 +5,39 @@ import (
 	"sync"
 	"time"
 
+	"libdb.so/hypnoview/lib/hypnohub"
 	"libdb.so/hypnoview/lib/hypnohub/query"
 )
 
-// PopularityQueryUpdater is a struct that contains the queries for each time
-// period. It automatically updates the queries when needed.
-// It is safe to use from multiple goroutines.
-type PopularityQueryUpdater struct {
+// PopularQueryUpdater is a struct that contains the queries for each time
+// period. It automatically updates the queries when needed. It is safe to use
+// from multiple goroutines.
+type PopularQueryUpdater struct {
+	client *hypnohub.Client
 	daily  popularQuery
 	weekly popularQuery
 	montly popularQuery
 }
 
+// NewPopularQueryUpdater creates a new PopularQueryUpdater.
+func NewPopularQueryUpdater(client *hypnohub.Client) *PopularQueryUpdater {
+	return &PopularQueryUpdater{
+		client: client,
+	}
+}
+
 // DailyPopularQuery returns the query for the daily popular posts.
-func (p *PopularityQueryUpdater) DailyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
+func (p *PopularQueryUpdater) DailyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
 	return p.daily.update(ctx, searcher)
 }
 
 // WeeklyPopularQuery returns the query for the weekly popular posts.
-func (p *PopularityQueryUpdater) WeeklyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
+func (p *PopularQueryUpdater) WeeklyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
 	return p.weekly.update(ctx, searcher)
 }
 
 // MonthlyPopularQuery returns the query for the monthly popular posts.
-func (p *PopularityQueryUpdater) MonthlyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
+func (p *PopularQueryUpdater) MonthlyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
 	return p.montly.update(ctx, searcher)
 }
 

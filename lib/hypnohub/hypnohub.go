@@ -130,6 +130,13 @@ func New() *Client {
 	}
 }
 
+// FromHTTPClient creates a new Hypnohub client from an existing HTTP client.
+func FromHTTPClient(c *http.Client) *Client {
+	return &Client{
+		HTTPClient: c,
+	}
+}
+
 // SearchPostsResult is the result of a search for posts on Hypnohub.
 type SearchPostsResult struct {
 	Posts  []Post `json:"posts"`

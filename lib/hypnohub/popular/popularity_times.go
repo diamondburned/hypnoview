@@ -17,15 +17,15 @@ import (
 func EarliestTimestampForPeriod(now time.Time, period TimePeriod) time.Time {
 	now = initNow(now)
 	switch period {
-	case Day:
+	case Daily:
 		now = truncateDay(now).Add(-24 * time.Hour)
-	case Week:
+	case Weekly:
 		now = truncateWeek(now)
 		if now.Weekday() != time.Sunday {
 			// Push this back another week.
 			now = now.AddDate(0, 0, -7)
 		}
-	case Month:
+	case Monthly:
 		day := now.Day()
 		now = truncateMonth(now)
 		if day > 14 {
