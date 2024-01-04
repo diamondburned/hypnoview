@@ -26,7 +26,7 @@ import (
 	"libdb.so/hypnoview/lib/hypnohub/query"
 )
 
-//go:embed frontend
+//go:embed frontend/*
 var frontendFS embed.FS
 
 var (
@@ -88,15 +88,15 @@ func run(ctx context.Context) error {
 	})
 
 	r.Group(func(r chi.Router) {
-		var fs fs.FS
-		if _, err := os.Stat("cmd/popular-query-api/frontend"); err == nil {
+		var rootFS fs.FS
+		if _, err := os.Stat("cmd/popular-query-app/frontend"); err == nil {
 			logger.Info("detected repository layout, using local frontend")
-			fs = os.DirFS("cmd/popular-query-api/frontend")
+			rootFS = os.DirFS("cmd/popular-query-app/frontend")
 		} else {
 			r.Use(withETagCache(hashFS(frontendFS), true))
-			fs = frontendFS
+			rootFS, _ = fs.Sub(frontendFS, "frontend")
 		}
-		r.Mount("/", http.FileServer(http.FS(fs)))
+		r.Mount("/", http.FileServer(http.FS(rootFS)))
 	})
 
 	logger.Info("server is listening", "addr", httpAddr)
