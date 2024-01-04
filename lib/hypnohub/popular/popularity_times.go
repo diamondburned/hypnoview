@@ -18,7 +18,7 @@ func EarliestTimestampForPeriod(now time.Time, period TimePeriod) time.Time {
 	now = initNow(now)
 	switch period {
 	case Daily:
-		now = truncateDay(now).Add(-24 * time.Hour)
+		now = truncateDay(now).AddDate(0, 0, -1)
 	case Weekly:
 		now = truncateWeek(now)
 		if now.Weekday() != time.Sunday {
@@ -28,10 +28,12 @@ func EarliestTimestampForPeriod(now time.Time, period TimePeriod) time.Time {
 	case Monthly:
 		day := now.Day()
 		now = truncateMonth(now)
-		if day > 14 {
+		if day <= 14 {
 			// Push this back another month.
 			now = now.AddDate(0, -1, 0)
 		}
+	default:
+		panic("invalid period")
 	}
 	return now
 }
@@ -60,13 +62,12 @@ func truncateWeek(t time.Time) time.Time {
 
 // truncateMonth truncates the time to the beginning of the month.
 func truncateMonth(t time.Time) time.Time {
-	t = truncateDay(t)
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 }
 
 func initNow(t time.Time) time.Time {
 	if t.IsZero() {
-		return time.Now()
+		return time.Now().UTC()
 	}
 	return t
 }

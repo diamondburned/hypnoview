@@ -95,7 +95,7 @@ func EstimatePostHistory(ctx context.Context, searcher PostsSearcher, opts Estim
 			// Ensure we're not going back and forth between the same page.
 			// We determine this by checking if the gap between the last offset
 			// and the current offset is less than half the page size.
-			if last2IntsDifference(offsets) < len(page.Posts) {
+			if last2IntsDifference(offsets) < 3 {
 				return false, binarySearchBreak
 			}
 

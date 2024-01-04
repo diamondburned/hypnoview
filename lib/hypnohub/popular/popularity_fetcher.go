@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"libdb.so/hypnoview/lib/hypnohub"
 	"libdb.so/hypnoview/lib/hypnohub/query"
 )
 
@@ -13,32 +12,35 @@ import (
 // period. It automatically updates the queries when needed. It is safe to use
 // from multiple goroutines.
 type PopularQueryUpdater struct {
-	client *hypnohub.Client
-	daily  popularQuery
-	weekly popularQuery
-	montly popularQuery
+	searcher PostsSearcher
+	daily    popularQuery
+	weekly   popularQuery
+	montly   popularQuery
 }
 
 // NewPopularQueryUpdater creates a new PopularQueryUpdater.
-func NewPopularQueryUpdater(client *hypnohub.Client) *PopularQueryUpdater {
+func NewPopularQueryUpdater(searcher PostsSearcher) *PopularQueryUpdater {
 	return &PopularQueryUpdater{
-		client: client,
+		searcher: searcher,
+		daily:    popularQuery{period: Daily},
+		weekly:   popularQuery{period: Weekly},
+		montly:   popularQuery{period: Monthly},
 	}
 }
 
 // DailyPopularQuery returns the query for the daily popular posts.
-func (p *PopularQueryUpdater) DailyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
-	return p.daily.update(ctx, searcher)
+func (p *PopularQueryUpdater) DailyPopularQuery(ctx context.Context) (query.Query, error) {
+	return p.daily.update(ctx, p.searcher)
 }
 
 // WeeklyPopularQuery returns the query for the weekly popular posts.
-func (p *PopularQueryUpdater) WeeklyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
-	return p.weekly.update(ctx, searcher)
+func (p *PopularQueryUpdater) WeeklyPopularQuery(ctx context.Context) (query.Query, error) {
+	return p.weekly.update(ctx, p.searcher)
 }
 
 // MonthlyPopularQuery returns the query for the monthly popular posts.
-func (p *PopularQueryUpdater) MonthlyPopularQuery(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
-	return p.montly.update(ctx, searcher)
+func (p *PopularQueryUpdater) MonthlyPopularQuery(ctx context.Context) (query.Query, error) {
+	return p.montly.update(ctx, p.searcher)
 }
 
 type popularQuery struct {
@@ -50,12 +52,13 @@ type popularQuery struct {
 }
 
 func (q *popularQuery) update(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
-	now := EarliestTimestampForPeriod(time.Now(), q.period)
+	now := time.Now().UTC()
+	now = EarliestTimestampForPeriod(now, q.period)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if q.last.After(now) {
+	if q.last.Equal(now) {
 		return q.query, nil
 	}
 
