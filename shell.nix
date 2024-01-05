@@ -6,6 +6,15 @@ pkgs.mkShell {
 		gopls
 		gotools
 		deno
-		nodePackages.prettier
+		nodejs
 	];
+
+	shellHook = ''
+		NODE_MODULES_BIN=(
+			$(find "${builtins.toPath ./.}" -path '*/node_modules/.bin' \
+				| sort \
+				| tr $'\n' :)
+		)
+		export PATH="$PATH:$NODE_MODULES_BIN"
+	'';
 }
