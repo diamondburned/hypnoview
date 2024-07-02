@@ -13,6 +13,7 @@ html {
 
 body {
   margin: auto;
+  max-width: 48em;
   background-color: #222;
 }
 
@@ -88,7 +89,7 @@ footer > :last-child {
   text-align: right;
 }
 
-@media (max-width: 400px) {
+@media (max-width: 48em) {
   footer {
     grid-template-columns: 1fr;
   }
@@ -131,21 +132,22 @@ footer > :last-child {
   margin: var(--padding) 0;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 48em) {
   #query-generate .time-period-buttons {
     flex-direction: column;
   }
 }
 
-#query-generate .time-period-buttons button:nth-child(1) {
+#query-generate .time-period-buttons #daily,
+#query-generate .time-period-buttons #daily-yesterday {
   --color-rgb: 255, 211, 192;
 }
 
-#query-generate .time-period-buttons button:nth-child(2) {
+#query-generate .time-period-buttons #weekly {
   --color-rgb: 180, 237, 234;
 }
 
-#query-generate .time-period-buttons button:nth-child(3) {
+#query-generate .time-period-buttons #monthly {
   --color-rgb: 255, 216, 232;
 }
 
