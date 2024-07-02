@@ -23,7 +23,6 @@ import (
 	"libdb.so/hypnoview/lib/httputil"
 	"libdb.so/hypnoview/lib/hypnohub"
 	"libdb.so/hypnoview/lib/hypnohub/popular"
-	"libdb.so/hypnoview/lib/hypnohub/query"
 )
 
 //go:embed frontend/*
@@ -83,6 +82,7 @@ func run(ctx context.Context) error {
 		}
 
 		r.Get("/daily", handlePopular(updater, popular.Daily))
+		r.Get("/daily-yesterday", handlePopular(updater, popular.DailyYesterday))
 		r.Get("/weekly", handlePopular(updater, popular.Weekly))
 		r.Get("/monthly", handlePopular(updater, popular.Monthly))
 	})
@@ -104,23 +104,11 @@ func run(ctx context.Context) error {
 }
 
 func handlePopular(updater *popular.PopularQueryUpdater, period popular.TimePeriod) http.HandlerFunc {
-	var queryFunc func(ctx context.Context) (query.Query, error)
-	switch period {
-	case popular.Daily:
-		queryFunc = updater.DailyPopularQuery
-	case popular.Weekly:
-		queryFunc = updater.WeeklyPopularQuery
-	case popular.Monthly:
-		queryFunc = updater.MonthlyPopularQuery
-	default:
-		panic("invalid period")
-	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Intentionally use the background context so that the query is never
 		// interrupted, otherwise the user can abuse the endpoint to spam
 		// the server with requests.
-		query, err := queryFunc(context.Background())
+		query, err := updater.QueryPopular(context.Background(), period)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

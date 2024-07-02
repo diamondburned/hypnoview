@@ -18,15 +18,19 @@ const (
 	Daily TimePeriod = iota
 	Weekly
 	Monthly
+	DailyYesterday
+
+	maxTimePeriod
 )
 
 // EstimatePostMaxOffsets hard codes the post offsets for each time period.
 // This offset is dependent on how active the site is, so it is not guaranteed
 // to be accurate. Because of this, it is overestimated to be safe.
 var EstimatePostMaxOffsets = map[TimePeriod]int{
-	Monthly: 3000,
-	Weekly:  800,
-	Daily:   200,
+	Monthly:        3000,
+	Weekly:         800,
+	Daily:          200,
+	DailyYesterday: 400,
 }
 
 // MaxOffset returns the maximum offset for the given time period.
@@ -48,6 +52,9 @@ var _ PostsSearcher = (*hypnohub.Client)(nil)
 type EstimatePostOptions struct {
 	// Now is the current time. If zero, then [time.Now] is used.
 	Now time.Time
+	// Timezone is the timezone to use for the estimate.
+	// If zero, then [time.UTC] is used.
+	Timezone *time.Location
 	// Period is the maximum time period to estimate the post history for.
 	Period TimePeriod
 	// Accuracy is the accuracy of the estimate. If 0, then the estimate is
@@ -63,10 +70,17 @@ func EstimatePostHistory(ctx context.Context, searcher PostsSearcher, opts Estim
 		opts.Now = time.Now()
 	}
 
+	if opts.Timezone == nil {
+		opts.Timezone = time.UTC
+	}
+	opts.Now = opts.Now.In(opts.Timezone)
+
 	var timeThreshold time.Time
 	switch opts.Period {
 	case Daily:
 		timeThreshold = opts.Now.Add(-24 * time.Hour)
+	case DailyYesterday:
+		timeThreshold = opts.Now.Add(-48 * time.Hour)
 	case Weekly:
 		timeThreshold = opts.Now.Add(-7 * 24 * time.Hour)
 	case Monthly:

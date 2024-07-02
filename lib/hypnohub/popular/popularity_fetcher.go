@@ -2,6 +2,7 @@ package popular
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,34 +14,22 @@ import (
 // from multiple goroutines.
 type PopularQueryUpdater struct {
 	searcher PostsSearcher
-	daily    popularQuery
-	weekly   popularQuery
-	montly   popularQuery
+	periods  [maxTimePeriod]popularQuery
 }
 
 // NewPopularQueryUpdater creates a new PopularQueryUpdater.
 func NewPopularQueryUpdater(searcher PostsSearcher) *PopularQueryUpdater {
 	return &PopularQueryUpdater{
 		searcher: searcher,
-		daily:    popularQuery{period: Daily},
-		weekly:   popularQuery{period: Weekly},
-		montly:   popularQuery{period: Monthly},
 	}
 }
 
-// DailyPopularQuery returns the query for the daily popular posts.
-func (p *PopularQueryUpdater) DailyPopularQuery(ctx context.Context) (query.Query, error) {
-	return p.daily.update(ctx, p.searcher)
-}
-
-// WeeklyPopularQuery returns the query for the weekly popular posts.
-func (p *PopularQueryUpdater) WeeklyPopularQuery(ctx context.Context) (query.Query, error) {
-	return p.weekly.update(ctx, p.searcher)
-}
-
-// MonthlyPopularQuery returns the query for the monthly popular posts.
-func (p *PopularQueryUpdater) MonthlyPopularQuery(ctx context.Context) (query.Query, error) {
-	return p.montly.update(ctx, p.searcher)
+// QueryPopular returns the query for the popular posts in the given time period.
+func (p *PopularQueryUpdater) QueryPopular(ctx context.Context, period TimePeriod) (query.Query, error) {
+	if period < 0 || period >= maxTimePeriod {
+		return nil, fmt.Errorf("invalid time period %v", period)
+	}
+	return p.periods[period].update(ctx, p.searcher)
 }
 
 type popularQuery struct {
