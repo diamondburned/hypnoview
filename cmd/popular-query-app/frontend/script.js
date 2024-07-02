@@ -48,9 +48,6 @@ function disableAllButtons(disabled = true) {
 }
 
 for (const button of generateButtons) {
-  if (!["daily", "weekly", "monthly"].includes(button.id)) {
-    throw new Error("Invalid generateButton ID");
-  }
   button.addEventListener("click", () => generateButtonPress(button));
 }
 
