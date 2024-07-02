@@ -20,6 +20,8 @@ func EarliestTimestampForPeriod(now time.Time, period TimePeriod) time.Time {
 	switch period {
 	case Daily:
 		early = truncateDay(early).AddDate(0, 0, -1)
+	case DailyYesterday:
+		early = truncateDay(early).AddDate(0, 0, -2)
 	case Weekly:
 		early = truncateWeek(early)
 		if now.Weekday() != time.Sunday {

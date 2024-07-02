@@ -19,9 +19,13 @@ type PopularQueryUpdater struct {
 
 // NewPopularQueryUpdater creates a new PopularQueryUpdater.
 func NewPopularQueryUpdater(searcher PostsSearcher) *PopularQueryUpdater {
-	return &PopularQueryUpdater{
+	p := &PopularQueryUpdater{
 		searcher: searcher,
 	}
+	for i := range p.periods {
+		p.periods[i].period = TimePeriod(i)
+	}
+	return p
 }
 
 // QueryPopular returns the query for the popular posts in the given time period.
@@ -42,12 +46,12 @@ type popularQuery struct {
 
 func (q *popularQuery) update(ctx context.Context, searcher PostsSearcher) (query.Query, error) {
 	now := time.Now().UTC()
-	now = EarliestTimestampForPeriod(now, q.period)
+	earliest := EarliestTimestampForPeriod(now, q.period)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if q.last.Equal(now) {
+	if q.last.Equal(earliest) {
 		return q.query, nil
 	}
 
@@ -57,7 +61,7 @@ func (q *popularQuery) update(ctx context.Context, searcher PostsSearcher) (quer
 	}
 
 	q.query = query
-	q.last = now
+	q.last = earliest
 	return query, nil
 }
 

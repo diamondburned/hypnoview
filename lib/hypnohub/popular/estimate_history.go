@@ -74,20 +74,7 @@ func EstimatePostHistory(ctx context.Context, searcher PostsSearcher, opts Estim
 		opts.Timezone = time.UTC
 	}
 	opts.Now = opts.Now.In(opts.Timezone)
-
-	var timeThreshold time.Time
-	switch opts.Period {
-	case Daily:
-		timeThreshold = opts.Now.Add(-24 * time.Hour)
-	case DailyYesterday:
-		timeThreshold = opts.Now.Add(-48 * time.Hour)
-	case Weekly:
-		timeThreshold = opts.Now.Add(-7 * 24 * time.Hour)
-	case Monthly:
-		timeThreshold = opts.Now.Add(-30 * 24 * time.Hour)
-	default:
-		return 0, fmt.Errorf("invalid limit: %v", opts.Period)
-	}
+	timeThreshold := EarliestTimestampForPeriod(opts.Now, opts.Period)
 
 	const offsetCount = 2
 	offsets := make([]int, 0, offsetCount)
