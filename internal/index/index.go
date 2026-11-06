@@ -278,36 +278,36 @@ func (s *Store) PruneOldSnapshots(ctx context.Context, before time.Time) error {
 // IndexedPost represents a post stored in the local index along with its
 // computed popularity metrics for a requested sliding window.
 type IndexedPost struct {
-	ID            hypnohub.PostID `json:"id"`
-	CreatedAt     time.Time       `json:"created_at"`
-	ChangedAt     time.Time       `json:"changed_at"`
-	Score         int             `json:"score"`
-	Rating        hypnohub.Rating `json:"rating"`
-	CreatorID     int             `json:"creator_id"`
-	ParentID      hypnohub.PostID `json:"parent_id"`
-	MD5           string          `json:"md5"`
-	Source        string          `json:"source"`
-	Status        string          `json:"status"`
-	HasNotes      bool            `json:"has_notes"`
-	HasComments   bool            `json:"has_comments"`
-	HasChildren   bool            `json:"has_children"`
+	ID          hypnohub.PostID `json:"id"`
+	CreatedAt   time.Time       `json:"created_at"`
+	ChangedAt   time.Time       `json:"changed_at"`
+	Score       int             `json:"score"`
+	Rating      hypnohub.Rating `json:"rating"`
+	CreatorID   int             `json:"creator_id"`
+	ParentID    hypnohub.PostID `json:"parent_id"`
+	MD5         string          `json:"md5"`
+	Source      string          `json:"source"`
+	Status      string          `json:"status"`
+	HasNotes    bool            `json:"has_notes"`
+	HasComments bool            `json:"has_comments"`
+	HasChildren bool            `json:"has_children"`
 
-	FileURL       string          `json:"file_url"`
-	FileExt       string          `json:"file_ext"`
-	Width         int             `json:"width"`
-	Height        int             `json:"height"`
+	FileURL string `json:"file_url"`
+	FileExt string `json:"file_ext"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
 
-	SampleURL     string          `json:"sample_url"`
-	SampleWidth   int             `json:"sample_width"`
-	SampleHeight  int             `json:"sample_height"`
+	SampleURL    string `json:"sample_url"`
+	SampleWidth  int    `json:"sample_width"`
+	SampleHeight int    `json:"sample_height"`
 
-	PreviewURL    string          `json:"preview_url"`
-	PreviewWidth  int             `json:"preview_width"`
-	PreviewHeight int             `json:"preview_height"`
+	PreviewURL    string `json:"preview_url"`
+	PreviewWidth  int    `json:"preview_width"`
+	PreviewHeight int    `json:"preview_height"`
 
-	Tags          []string        `json:"tags"`
-	FirstSeenAt   time.Time       `json:"first_seen_at"`
-	LastPolledAt  time.Time       `json:"last_polled_at"`
+	Tags         []string  `json:"tags"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastPolledAt time.Time `json:"last_polled_at"`
 
 	// Group / pool / sibling metrics:
 	GroupID        hypnohub.PostID `json:"group_id"`
@@ -315,11 +315,11 @@ type IndexedPost struct {
 	GroupIsLatest  bool            `json:"group_is_latest"`
 
 	// Popularity metrics for the queried window:
-	BaselineScore int             `json:"baseline_score"`
-	ScoreDelta    int             `json:"score_delta"`
-	WindowHours   float64         `json:"window_hours"`
-	ScoreRate     float64         `json:"score_rate"` // upvotes per hour (damped)
-	HotScore      float64         `json:"hot_score"`
+	BaselineScore int     `json:"baseline_score"`
+	ScoreDelta    int     `json:"score_delta"`
+	WindowHours   float64 `json:"window_hours"`
+	ScoreRate     float64 `json:"score_rate"` // upvotes per hour (damped)
+	HotScore      float64 `json:"hot_score"`
 }
 
 // ScorePoint is a single historical score observation for a post.
@@ -1254,13 +1254,13 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 
 	args := make([]any, 0, 18+len(whereArgs))
 	args = append(args,
-		windowStartUnix, nowUnix,                   // CTE baseline
-		windowStartUnix,                            // baselineExpr
-		windowStartUnix,                            // deltaExpr
-		nowUnix, windowStartUnix, windowStartUnix,  // effHoursExpr
-		windowStartUnix,                            // score_rate deltaExpr
+		windowStartUnix, nowUnix, // CTE baseline
+		windowStartUnix,                           // baselineExpr
+		windowStartUnix,                           // deltaExpr
+		nowUnix, windowStartUnix, windowStartUnix, // effHoursExpr
+		windowStartUnix,                                // score_rate deltaExpr
 		nowUnix, windowStartUnix, windowStartUnix, tau, // score_rate effHoursExpr + tau
-		windowStartUnix,                            // hot_score deltaExpr
+		windowStartUnix,                                // hot_score deltaExpr
 		nowUnix, windowStartUnix, windowStartUnix, tau, // hot_score effHoursExpr + tau
 	)
 	args = append(args, whereArgs...)
@@ -1475,40 +1475,40 @@ func postToIndexed(p sqlcgen.Post, nowUnix int64, tau float64) IndexedPost {
 	hotScore := scoreRate * math.Pow(float64(max(1, p.Score)), 0.35)
 
 	return IndexedPost{
-		ID:            hypnohub.PostID(p.ID),
-		CreatedAt:     time.Unix(p.CreatedAt, 0).UTC(),
-		ChangedAt:     time.Unix(p.ChangedAt, 0).UTC(),
-		Score:         int(p.Score),
-		Rating:        hypnohub.Rating(p.Rating).Normalize(),
-		CreatorID:     int(p.CreatorID),
-		ParentID:      hypnohub.PostID(p.ParentID),
-		MD5:           p.MD5,
-		Source:        p.Source,
-		Status:        p.Status,
-		HasNotes:      p.HasNotes != 0,
-		HasComments:   p.HasComments != 0,
-		HasChildren:   p.HasChildren != 0,
-		FileURL:       p.FileURL,
-		FileExt:       p.FileExt,
-		Width:         int(p.Width),
-		Height:        int(p.Height),
-		SampleURL:     p.SampleURL,
-		SampleWidth:   int(p.SampleWidth),
-		SampleHeight:  int(p.SampleHeight),
-		PreviewURL:    p.PreviewURL,
-		PreviewWidth:  int(p.PreviewWidth),
-		PreviewHeight: int(p.PreviewHeight),
-		Tags:          strings.Fields(p.TagsRaw),
-		FirstSeenAt:   time.Unix(p.FirstSeenAt, 0).UTC(),
-		LastPolledAt:  time.Unix(p.LastPolledAt, 0).UTC(),
+		ID:             hypnohub.PostID(p.ID),
+		CreatedAt:      time.Unix(p.CreatedAt, 0).UTC(),
+		ChangedAt:      time.Unix(p.ChangedAt, 0).UTC(),
+		Score:          int(p.Score),
+		Rating:         hypnohub.Rating(p.Rating).Normalize(),
+		CreatorID:      int(p.CreatorID),
+		ParentID:       hypnohub.PostID(p.ParentID),
+		MD5:            p.MD5,
+		Source:         p.Source,
+		Status:         p.Status,
+		HasNotes:       p.HasNotes != 0,
+		HasComments:    p.HasComments != 0,
+		HasChildren:    p.HasChildren != 0,
+		FileURL:        p.FileURL,
+		FileExt:        p.FileExt,
+		Width:          int(p.Width),
+		Height:         int(p.Height),
+		SampleURL:      p.SampleURL,
+		SampleWidth:    int(p.SampleWidth),
+		SampleHeight:   int(p.SampleHeight),
+		PreviewURL:     p.PreviewURL,
+		PreviewWidth:   int(p.PreviewWidth),
+		PreviewHeight:  int(p.PreviewHeight),
+		Tags:           strings.Fields(p.TagsRaw),
+		FirstSeenAt:    time.Unix(p.FirstSeenAt, 0).UTC(),
+		LastPolledAt:   time.Unix(p.LastPolledAt, 0).UTC(),
 		GroupID:        hypnohub.PostID(p.GroupID),
 		GroupPageCount: int(p.GroupPageCount),
 		GroupIsLatest:  p.GroupIsLatest != 0,
-		BaselineScore: 0,
-		ScoreDelta:    int(p.Score),
-		WindowHours:   math.Round(effHours*100) / 100,
-		ScoreRate:     math.Round(scoreRate*1000) / 1000,
-		HotScore:      math.Round(hotScore*1000) / 1000,
+		BaselineScore:  0,
+		ScoreDelta:     int(p.Score),
+		WindowHours:    math.Round(effHours*100) / 100,
+		ScoreRate:      math.Round(scoreRate*1000) / 1000,
+		HotScore:       math.Round(hotScore*1000) / 1000,
 	}
 }
 
@@ -1529,40 +1529,40 @@ func newIndexedPost(
 	windowHours, scoreRate, hotScore float64,
 ) IndexedPost {
 	return IndexedPost{
-		ID:            hypnohub.PostID(id),
-		CreatedAt:     time.Unix(createdAt, 0).UTC(),
-		ChangedAt:     time.Unix(changedAt, 0).UTC(),
-		Score:         int(score),
-		Rating:        hypnohub.Rating(rating).Normalize(),
-		CreatorID:     int(creatorID),
-		ParentID:      hypnohub.PostID(parentID),
-		MD5:           md5,
-		Source:        source,
-		Status:        status,
-		HasNotes:      hasNotes != 0,
-		HasComments:   hasComments != 0,
-		HasChildren:   hasChildren != 0,
-		FileURL:       fileURL,
-		FileExt:       fileExt,
-		Width:         int(width),
-		Height:        int(height),
-		SampleURL:     sampleURL,
-		SampleWidth:   int(sampleWidth),
-		SampleHeight:  int(sampleHeight),
-		PreviewURL:    previewURL,
-		PreviewWidth:  int(previewWidth),
-		PreviewHeight: int(previewHeight),
-		Tags:          strings.Fields(tagsRaw),
-		FirstSeenAt:   time.Unix(firstSeenAt, 0).UTC(),
-		LastPolledAt:  time.Unix(lastPolledAt, 0).UTC(),
+		ID:             hypnohub.PostID(id),
+		CreatedAt:      time.Unix(createdAt, 0).UTC(),
+		ChangedAt:      time.Unix(changedAt, 0).UTC(),
+		Score:          int(score),
+		Rating:         hypnohub.Rating(rating).Normalize(),
+		CreatorID:      int(creatorID),
+		ParentID:       hypnohub.PostID(parentID),
+		MD5:            md5,
+		Source:         source,
+		Status:         status,
+		HasNotes:       hasNotes != 0,
+		HasComments:    hasComments != 0,
+		HasChildren:    hasChildren != 0,
+		FileURL:        fileURL,
+		FileExt:        fileExt,
+		Width:          int(width),
+		Height:         int(height),
+		SampleURL:      sampleURL,
+		SampleWidth:    int(sampleWidth),
+		SampleHeight:   int(sampleHeight),
+		PreviewURL:     previewURL,
+		PreviewWidth:   int(previewWidth),
+		PreviewHeight:  int(previewHeight),
+		Tags:           strings.Fields(tagsRaw),
+		FirstSeenAt:    time.Unix(firstSeenAt, 0).UTC(),
+		LastPolledAt:   time.Unix(lastPolledAt, 0).UTC(),
 		GroupID:        hypnohub.PostID(groupID),
 		GroupIsLatest:  groupIsLatest != 0,
 		GroupPageCount: int(groupPageCount),
-		BaselineScore: int(baselineScore),
-		ScoreDelta:    int(scoreDelta),
-		WindowHours:   math.Round(windowHours*100) / 100,
-		ScoreRate:     math.Round(scoreRate*1000) / 1000,
-		HotScore:      math.Round(hotScore*1000) / 1000,
+		BaselineScore:  int(baselineScore),
+		ScoreDelta:     int(scoreDelta),
+		WindowHours:    math.Round(windowHours*100) / 100,
+		ScoreRate:      math.Round(scoreRate*1000) / 1000,
+		HotScore:       math.Round(hotScore*1000) / 1000,
 	}
 }
 

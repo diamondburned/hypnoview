@@ -10,15 +10,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/httplog/v2"
-	"github.com/lmittmann/tint"
-	"github.com/spf13/pflag"
-	"libdb.so/hserve"
 	"gaze.d14.pet"
 	"gaze.d14.pet/httputil"
 	"gaze.d14.pet/internal/index"
 	"gaze.d14.pet/internal/server/api"
 	"gaze.d14.pet/internal/server/web"
+	"github.com/go-chi/httplog/v2"
+	"github.com/lmittmann/tint"
+	"github.com/spf13/pflag"
+	"libdb.so/hserve"
 )
 
 type options struct {

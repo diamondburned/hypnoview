@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strings"
 
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/go-chi/chi/v5"
-	"gaze.d14.pet"
-	"gaze.d14.pet/internal/index"
 )
 
 // Server provides the REST API for Hypnogaze.

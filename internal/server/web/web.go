@@ -23,10 +23,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/go-chi/chi/v5"
 	"gaze.d14.pet"
 	"gaze.d14.pet/internal/index"
 	"gaze.d14.pet/internal/server/api"
+	"github.com/go-chi/chi/v5"
 )
 
 func init() {

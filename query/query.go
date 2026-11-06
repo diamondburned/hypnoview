@@ -61,7 +61,7 @@ func Fuzzy(q Query) Query {
 	return q
 }
 
-// HasPrefix applies the prefix search operator to the given query.
+// HasSuffix applies the suffix search operator to the given query.
 func HasSuffix(q Query) Query {
 	q = slices.Clone(q)
 	for i, s := range q {

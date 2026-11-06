@@ -3,6 +3,7 @@ package hypnohub
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -65,6 +66,7 @@ func (d Date) Time() time.Time {
 	return time.Time(d)
 }
 
+// UnmarshalText parses a text-encoded date from the hypnohub API.
 func (d *Date) UnmarshalText(b []byte) error {
 	t, err := time.Parse("Mon Jan 2 15:04:05 -0700 2006", string(b))
 	if err != nil {
@@ -212,15 +214,15 @@ type SearchPostsOptions struct {
 const MaxSearchPostsLimit = 1000
 
 // SearchPosts searches for posts on Hypnohub using the default page size (100).
-func (d *Client) SearchPosts(ctx context.Context, query string, postOffset int) (*SearchPostsResult, error) {
-	return d.SearchPostsWithOptions(ctx, SearchPostsOptions{
+func (c *Client) SearchPosts(ctx context.Context, query string, postOffset int) (*SearchPostsResult, error) {
+	return c.SearchPostsWithOptions(ctx, SearchPostsOptions{
 		Query:      query,
 		PageOffset: postOffset,
 	})
 }
 
 // SearchPostsWithOptions searches for posts on Hypnohub with custom pagination options.
-func (d *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOptions) (*SearchPostsResult, error) {
+func (c *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOptions) (*SearchPostsResult, error) {
 	q := url.Values{
 		"page": {"dapi"},
 		"s":    {"post"},
@@ -231,7 +233,7 @@ func (d *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOpt
 	if opts.Limit > 0 {
 		q.Set("limit", strconv.Itoa(opts.Limit))
 	}
-	url := "https://hypnohub.net/index.php?" + q.Encode()
+	endpoint := "https://hypnohub.net/index.php?" + q.Encode()
 
 	type Response struct {
 		XMLName xml.Name `xml:"posts"`
@@ -240,7 +242,7 @@ func (d *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOpt
 		Posts   []Post   `xml:"post"`
 	}
 
-	response, err := getXML[Response](ctx, d.HTTPClient, url)
+	response, err := getXML[Response](ctx, c.HTTPClient, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +260,7 @@ type SearchTagsResult struct {
 }
 
 // SearchTags searches for tags on Hypnohub.
-func (d *Client) SearchTags(ctx context.Context, query string, afterID int) (*SearchTagsResult, error) {
+func (c *Client) SearchTags(ctx context.Context, query string, afterID int) (*SearchTagsResult, error) {
 	q := url.Values{
 		"page":         {"dapi"},
 		"s":            {"tag"},
@@ -269,13 +271,13 @@ func (d *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	if afterID != 0 {
 		q["after_id"] = []string{strconv.Itoa(afterID)}
 	}
-	url := "https://hypnohub.net/index.php?" + q.Encode()
+	endpoint := "https://hypnohub.net/index.php?" + q.Encode()
 
 	type tagResponse struct {
 		XMLName xml.Name `xml:"tags"`
 		Tags    []Tag    `xml:"tag"`
 	}
-	resp, err := getXML[tagResponse](ctx, d.HTTPClient, url)
+	resp, err := getXML[tagResponse](ctx, c.HTTPClient, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -292,27 +294,26 @@ type xmlResponse struct {
 	Error   string   `xml:"reason,attr"`
 }
 
-func getXML[T any](ctx context.Context, c *http.Client, url string) (*T, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func getXML[T any](ctx context.Context, c *http.Client, rawURL string) (*T, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	r, err := c.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get %s: %w", url, err)
+		return nil, fmt.Errorf("failed to get %s: %w", rawURL, err)
 	}
 	defer r.Body.Close()
 
 	if r.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get %s: %s", url, r.Status)
+		return nil, fmt.Errorf("failed to get %s: %s", rawURL, r.Status)
 	}
 
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	r.Body.Close()
 
 	var v T
 	if err := xml.Unmarshal(b, &v); err == nil {
@@ -323,11 +324,11 @@ func getXML[T any](ctx context.Context, c *http.Client, url string) (*T, error) 
 	if err := xml.Unmarshal(b, &response); err == nil {
 		if response.Success != nil && !*response.Success {
 			if response.Error == "" {
-				return nil, fmt.Errorf("server error")
+				return nil, errors.New("server error")
 			}
 			return nil, fmt.Errorf("server error: %s", response.Error)
 		}
-		return nil, fmt.Errorf("server errored but did not provide a reason")
+		return nil, errors.New("server errored but did not provide a reason")
 	}
 
 	return nil, fmt.Errorf("server errored with status %s", r.Status)

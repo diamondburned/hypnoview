@@ -57,7 +57,7 @@ func WithClientLogger(logger *slog.Logger, opts ClientLogOpts) ClientMiddleware 
 				"status", resp.Status,
 				"headers", resp.Header)
 
-			if resp.StatusCode >= 400 {
+			if resp.StatusCode >= http.StatusBadRequest {
 				if opts.LogResponseError {
 					logger.Log(req.Context(), opts.ResponseErrorLevel,
 						"outgoing response error",
