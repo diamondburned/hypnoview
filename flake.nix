@@ -44,7 +44,7 @@
               meta = {
                 description = "Rolling popularity index and modern web UI for Hypnohub";
                 homepage = "https://gaze.d14.pet";
-                license = lib.licenses.agpl3Only;
+                license = lib.licenses.gpl3Only;
                 mainProgram = "hypnogaze";
               };
             };
