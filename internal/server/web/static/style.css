@@ -1386,10 +1386,6 @@ body:has(main #post-detail) footer.footer {
 	display: none;
 }
 
-body:has(main #post-detail) .post-detail {
-	padding: 0.75rem 1rem;
-}
-
 body.has-post-overlay .post-detail {
 	min-height: 100dvh;
 	display: flex;
@@ -1564,6 +1560,10 @@ body.has-post-overlay .post-detail {
 
 /* Desktop Post Detail Layout (> 900px) */
 @media (min-width: 901px) {
+	body:has(main #post-detail) .post-detail {
+		padding: 0.75rem 1rem;
+	}
+
 	.post-detail-grid {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) 360px;
@@ -1571,11 +1571,12 @@ body.has-post-overlay .post-detail {
 		align-items: start;
 	}
 
-	.post-media-box {
+	.post-media-box,
+	body.has-post-overlay .post-media-box {
 		background: oklch(0.06 0.01 335);
 		border: 1px solid var(--outline-variant);
 		border-radius: var(--radius-lg);
-		height: calc(100dvh - 10.5rem);
+		height: calc(100dvh - 8.5rem);
 		min-height: 22rem;
 		position: relative;
 		display: flex;
@@ -1583,10 +1584,6 @@ body.has-post-overlay .post-detail {
 		justify-content: center;
 		overflow: hidden;
 		cursor: pointer;
-	}
-
-	body.has-post-overlay .post-media-box {
-		height: calc(100dvh - 8.5rem);
 	}
 
 	.post-media-column:has(.post-group-switcher) .post-media-box,
@@ -1632,15 +1629,6 @@ body.has-post-overlay .post-detail {
 
 /* Mobile Post Detail Layout (<= 900px) */
 @media (max-width: 900px) {
-	body:has(main #post-detail) .topbar {
-		display: none;
-	}
-
-	body:has(main #post-detail) main.container {
-		padding: 0;
-		max-width: none;
-	}
-
 	.post-detail,
 	body.has-post-overlay .post-detail {
 		height: 100dvh;

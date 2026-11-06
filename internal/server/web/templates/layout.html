@@ -84,11 +84,29 @@
 				display: none !important;
 			}
 			@media (max-width: 900px) {
+				.post-detail {
+					height: auto !important;
+					max-height: none !important;
+					overflow: visible !important;
+					padding-bottom: 1rem !important;
+				}
+				.post-detail-grid,
+				.post-media-column {
+					flex: none !important;
+				}
+				.post-media-box {
+					flex: none !important;
+					height: 70dvh !important;
+				}
 				.post-sidebar {
 					position: static !important;
 					transform: none !important;
 					height: auto !important;
 					max-height: none !important;
+				}
+				.sheet-handle-zone,
+				.sheet-backdrop {
+					display: none !important;
 				}
 			}
 		</style>

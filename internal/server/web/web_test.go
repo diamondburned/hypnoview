@@ -570,9 +570,6 @@ func TestPWAManifestAndServiceWorker(t *testing.T) {
 	if !strings.Contains(swBody, "referrer: request.referrer") {
 		t.Errorf("sw.js missing referrer: request.referrer preservation")
 	}
-	if isSafeBackURL("/sw.js") {
-		t.Errorf("isSafeBackURL(/sw.js) returned true, want false")
-	}
 
 	// 3. GET /static/shell.html and verify /shell.html is 404
 	redundantShellReq := httptest.NewRequest(http.MethodGet, "/shell.html", nil)

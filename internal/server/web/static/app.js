@@ -1478,29 +1478,17 @@ function initPostDetail() {
 	});
 
 	const closeBtn = document.getElementById("post-close-btn");
-	if (closeBtn) {
+	if (closeBtn && !document.body.classList.contains("has-post-overlay")) {
 		closeBtn.onclick = (e) => {
 			e.preventDefault();
-			if (document.body.classList.contains("has-post-overlay")) {
-				closePostOverlay(false);
+			const backBtn = document.getElementById("post-back-btn");
+			if (backBtn?.href) {
+				window.location.href = backBtn.href;
+			} else if (window.history.length > 1) {
+				window.history.back();
 			} else {
-				const backBtn = document.getElementById("post-back-btn");
-				if (backBtn?.href) {
-					window.location.href = backBtn.href;
-				} else if (window.history.length > 1) {
-					window.history.back();
-				} else {
-					window.location.href = "/";
-				}
+				window.location.href = "/";
 			}
-		};
-	}
-
-	const backBtn = document.getElementById("post-back-btn");
-	if (backBtn && document.body.classList.contains("has-post-overlay")) {
-		backBtn.onclick = (e) => {
-			e.preventDefault();
-			closePostOverlay(false);
 		};
 	}
 
@@ -1647,6 +1635,12 @@ function attachGlobalListeners() {
 	});
 
 	document.addEventListener("click", (e) => {
+		if (document.body.classList.contains("has-post-overlay") && e.target.closest("#post-close-btn, #post-back-btn")) {
+			e.preventDefault();
+			closePostOverlay(false);
+			return;
+		}
+
 		if (e.target.id === "post-overlay-slot") {
 			closePostOverlay(false);
 			return;
