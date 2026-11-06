@@ -70,11 +70,6 @@ func NewPoller(store *Store, fetcher PostsFetcher, cfg PollerConfig) *Poller {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	if store != nil && store.client == nil {
-		if c, ok := fetcher.(*hypnohub.Client); ok {
-			store.SetClient(c)
-		}
-	}
 	return &Poller{
 		store:   store,
 		fetcher: fetcher,

@@ -172,12 +172,12 @@ type Tag struct {
 type TagType int
 
 const (
-	TagCategoryUnknown TagType = -1
-	TagTypeGeneral     TagType = 0
-	TagTypeArtist      TagType = 1
-	TagTypeCopyright   TagType = 3
-	TagTypeCharacter   TagType = 4
-	TagTypeMeta        TagType = 5
+	TagTypeUnknown   TagType = -1
+	TagTypeGeneral   TagType = 0
+	TagTypeArtist    TagType = 1
+	TagTypeCopyright TagType = 3
+	TagTypeCharacter TagType = 4
+	TagTypeMeta      TagType = 5
 )
 
 // Normalize returns a canonical TagType (Copyright, Character, Artist, Meta, or General).
@@ -220,25 +220,6 @@ func (t TagType) Slug() string {
 		return "meta"
 	default:
 		return "general"
-	}
-}
-
-// SortOrder returns the upstream Hypnohub sidebar display order:
-// Copyright (0) -> Character (1) -> Artist (2) -> General (3) -> Meta (4).
-func (t TagType) SortOrder() int {
-	switch t.Normalize() {
-	case TagTypeCopyright:
-		return 0
-	case TagTypeCharacter:
-		return 1
-	case TagTypeArtist:
-		return 2
-	case TagTypeGeneral:
-		return 3
-	case TagTypeMeta:
-		return 4
-	default:
-		return 3
 	}
 }
 
@@ -361,6 +342,33 @@ func (c *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	return &SearchTagsResult{resp.Tags}, nil
 }
 
+// ListTagsPage fetches a page of tags from the Hypnohub DAPI tag index ordered by count descending.
+// Each page returns up to limit tags (max 1000).
+func (c *Client) ListTagsPage(ctx context.Context, pageOffset, limit int) ([]Tag, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	q := url.Values{
+		"page":    {"dapi"},
+		"s":       {"tag"},
+		"q":       {"index"},
+		"orderby": {"count"},
+		"limit":   {strconv.Itoa(limit)},
+		"pid":     {strconv.Itoa(pageOffset)},
+	}
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
+
+	type tagResponse struct {
+		XMLName xml.Name `xml:"tags"`
+		Tags    []Tag    `xml:"tag"`
+	}
+	resp, err := getXML[tagResponse](ctx, c.HTTPClient, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Tags, nil
+}
+
 // TagByName fetches a single tag by exact name from the Hypnohub DAPI tag index.
 // Returns (nil, nil) if no matching tag exists upstream.
 func (c *Client) TagByName(ctx context.Context, name string) (*Tag, error) {
@@ -393,9 +401,11 @@ func (c *Client) TagByName(ctx context.Context, name string) (*Tag, error) {
 }
 
 var (
-	tagSidebarULRe = regexp.MustCompile(`(?is)<ul[^>]*\bid=["']tag-sidebar["'][^>]*>(.*?)</ul>`)
-	tagSidebarLIRe = regexp.MustCompile(`(?is)<li[^>]*\bclass=["'][^"']*\btag-type-(copyright|character|artist|general|metadata|meta)\b[^"']*["'][^>]*>(.*?)</li>`)
-	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b[^>]*>(.*?)</a>`)
+	tagSidebarULRe = regexp.MustCompile(`(?is)<ul[^>]*\bid=["']tag-sidebar["'][^>]*>([\s\S]*?)</ul>`)
+	tagSidebarLIRe = regexp.MustCompile(`(?is)<li[^>]*\bclass=["'][^"']*\btag-type-(copyright|character|artist|general|metadata|meta)\b[^"']*["'][^>]*>([\s\S]*?)</li>`)
+	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b([^>]*)>([\s\S]*?)</a>`)
+	hrefAttrRe     = regexp.MustCompile(`(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	htmlTagStripRe = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
 // PostViewTags fetches a post's HTML view page and scrapes tag categories from <ul id="tag-sidebar">.
@@ -426,7 +436,7 @@ func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]Ta
 		return nil, fmt.Errorf("failed to get %s: %s", endpoint, resp.Status)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, fmt.Errorf("reading post view HTML: %w", err)
 	}
@@ -436,10 +446,11 @@ func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]Ta
 
 // ParsePostViewTags extracts a map of canonical tag name -> TagType from a Gelbooru <ul id="tag-sidebar"> HTML snippet or page.
 func ParsePostViewTags(htmlBody string) map[string]TagType {
-	scope := htmlBody
-	if m := tagSidebarULRe.FindStringSubmatch(htmlBody); len(m) > 1 {
-		scope = m[1]
+	m := tagSidebarULRe.FindStringSubmatch(htmlBody)
+	if len(m) < 2 {
+		return nil
 	}
+	scope := m[1]
 
 	liMatches := tagSidebarLIRe.FindAllStringSubmatch(scope, -1)
 	if len(liMatches) == 0 {
@@ -468,12 +479,36 @@ func ParsePostViewTags(htmlBody string) map[string]TagType {
 		aMatches := tagSidebarARe.FindAllStringSubmatch(liInner, -1)
 		var tagName string
 		for _, am := range aMatches {
-			rawText := strings.TrimSpace(html.UnescapeString(am[1]))
-			if rawText == "" || rawText == "?" || rawText == "+" || rawText == "-" {
-				continue
+			attrs := am[1]
+			if hm := hrefAttrRe.FindStringSubmatch(attrs); len(hm) >= 3 {
+				rawHref := hm[1]
+				if rawHref == "" {
+					rawHref = hm[2]
+				}
+				rawHref = html.UnescapeString(rawHref)
+				if strings.Contains(rawHref, "tags=") {
+					if parsedURL, err := url.Parse(rawHref); err == nil {
+						if t := strings.ToLower(strings.TrimSpace(parsedURL.Query().Get("tags"))); t != "" {
+							tagName = t
+							break
+						}
+					}
+				}
 			}
-			tagName = strings.ReplaceAll(strings.ToLower(rawText), " ", "_")
 		}
+
+		if tagName == "" {
+			for _, am := range aMatches {
+				stripped := htmlTagStripRe.ReplaceAllString(am[2], "")
+				rawText := strings.TrimSpace(html.UnescapeString(stripped))
+				if rawText == "" || rawText == "?" || rawText == "+" || rawText == "-" || strings.EqualFold(rawText, "edit") {
+					continue
+				}
+				tagName = strings.ReplaceAll(strings.ToLower(rawText), " ", "_")
+				break
+			}
+		}
+
 		if tagName != "" {
 			out[tagName] = tagType
 		}

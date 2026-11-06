@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2015,7 +2016,7 @@ func TestBuildTagGroupsOrdering(t *testing.T) {
 	input := []PostTag{
 		{Name: "text", Category: hypnohub.TagTypeMeta, Count: 500},
 		{Name: "hypnosis", Category: hypnohub.TagTypeGeneral, Count: 1000},
-		{Name: "armpits", Category: hypnohub.TagCategoryUnknown, Count: 200},
+		{Name: "armpits", Category: hypnohub.TagTypeUnknown, Count: 200},
 		{Name: "thedrawing", Category: hypnohub.TagTypeArtist, Count: 43},
 		{Name: "emma_frost", Category: hypnohub.TagTypeCharacter, Count: 353},
 		{Name: "psylocke", Category: hypnohub.TagTypeCharacter, Count: 120},
@@ -2137,7 +2138,7 @@ func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
 			ID:        287547,
 			Score:     42,
 			Rating:    hypnohub.RatingExplicit,
-			Tags:      "comic hypnosis kubotite orihime_inoue bleach uncategorized_extra",
+			Tags:      "comic hypnosis kubotite orihime_inoue bleach",
 			Status:    "active",
 			CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour)),
 		},
@@ -2168,5 +2169,239 @@ func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
 	}
 	if postViewHits != 1 {
 		t.Errorf("expected second GetPost to use cached SQLite categories without HTTP call, got hits=%d", postViewHits)
+	}
+}
+
+func TestTagResolutionOverwriteProtection(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:        9001,
+			Score:     10,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "famous_artist new_tag",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	// Mark famous_artist as Artist (1), while new_tag remains Unknown (-1).
+	if err := store.persistTagCategories(ctx, map[string]hypnohub.TagType{
+		"famous_artist": hypnohub.TagTypeArtist,
+	}); err != nil {
+		t.Fatalf("persistTagCategories failed: %v", err)
+	}
+
+	// Upstream scrape returns only new_tag (Character) and omits famous_artist.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "9001" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<ul id="tag-sidebar">
+				<li class="tag-type-character tag"><a href="index.php?page=post&s=list&tags=new_tag">new tag</a></li>
+			</ul>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"></tags>`))
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	p, _, err := store.GetPost(ctx, 9001)
+	if err != nil {
+		t.Fatalf("GetPost(9001) failed: %v", err)
+	}
+
+	var artistCat, newTagCat int
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'famous_artist'").Scan(&artistCat); err != nil {
+		t.Fatalf("querying famous_artist category: %v", err)
+	}
+	if artistCat != int(hypnohub.TagTypeArtist) {
+		t.Errorf("famous_artist category = %d, want %d (TagTypeArtist); must not be overwritten!", artistCat, hypnohub.TagTypeArtist)
+	}
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'new_tag'").Scan(&newTagCat); err != nil {
+		t.Fatalf("querying new_tag category: %v", err)
+	}
+	if newTagCat != int(hypnohub.TagTypeCharacter) {
+		t.Errorf("new_tag category = %d, want %d (TagTypeCharacter)", newTagCat, hypnohub.TagTypeCharacter)
+	}
+	if len(p.TagGroups) != 2 || p.TagGroups[0].Slug != "character" || p.TagGroups[1].Slug != "artist" {
+		t.Errorf("expected Character and Artist groups on post, got %+v", p.TagGroups)
+	}
+}
+
+func TestTagResolutionSingleflightAndBackoff(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:        9002,
+			Score:     10,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "tag_one",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now),
+		},
+		{
+			ID:        9003,
+			Score:     10,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "tag_two",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	var scrapeCalls atomic.Int32
+	var failMode atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scrapeCalls.Add(1)
+		if failMode.Load() {
+			time.Sleep(40 * time.Millisecond)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<ul id="tag-sidebar">
+			<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=tag_one">tag one</a></li>
+		</ul>`))
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	// 1. Fire 8 concurrent GetPost(9002) calls -> must coalesce into 1 upstream request.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, _, err := store.GetPost(ctx, 9002)
+			if err != nil {
+				t.Errorf("concurrent GetPost(9002) failed: %v", err)
+				return
+			}
+			if len(p.TagGroups) != 1 || p.TagGroups[0].Slug != "copyright" {
+				t.Errorf("concurrent GetPost(9002) unexpected TagGroups: %+v", p.TagGroups)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := scrapeCalls.Load(); got != 1 {
+		t.Errorf("expected singleflight to make 1 upstream request across 8 concurrent GetPost calls, got %d", got)
+	}
+
+	// 2. Enable failure mode and request post 9003 -> sets 1-minute backoff so subsequent calls return in <10ms without hitting upstream.
+	failMode.Store(true)
+	scrapeCalls.Store(0)
+
+	_, _, err = store.GetPost(ctx, 9003)
+	if err != nil {
+		t.Fatalf("GetPost(9003) on upstream failure failed: %v", err)
+	}
+	if got := scrapeCalls.Load(); got != 1 {
+		t.Errorf("expected 1 upstream call before backoff engaged, got %d", got)
+	}
+
+	start := time.Now()
+	_, _, err = store.GetPost(ctx, 9003)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("second GetPost(9003) during backoff failed: %v", err)
+	}
+	if elapsed > 10*time.Millisecond {
+		t.Errorf("expected GetPost during backoff to return in <10ms, took %v", elapsed)
+	}
+	if got := scrapeCalls.Load(); got != 1 {
+		t.Errorf("expected 0 additional upstream calls during backoff, total calls = %d", got)
+	}
+}
+
+func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	// Seed bad_tag on 2 posts (post_count=2) and good_tag on 1 post (post_count=1)
+	// so bad_tag is ordered first by post_count DESC.
+	posts := []hypnohub.Post{
+		{ID: 1, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag good_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
+		{ID: 2, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("name") == "bad_tag" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if q.Get("name") == "good_tag" {
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"><tag type="1" count="50" name="good_tag" ambiguous="false" id="777"/></tags>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"></tags>`))
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	resolved, err := store.ResolveUnknownTagCategories(ctx, 10)
+	if err != nil {
+		t.Fatalf("ResolveUnknownTagCategories failed: %v", err)
+	}
+	if resolved != 1 {
+		t.Errorf("expected 1 resolved tag, got %d", resolved)
+	}
+
+	var goodCat, badCat int
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'good_tag'").Scan(&goodCat); err != nil {
+		t.Fatalf("querying good_tag category: %v", err)
+	}
+	if goodCat != int(hypnohub.TagTypeArtist) {
+		t.Errorf("good_tag category = %d, want %d (TagTypeArtist)", goodCat, hypnohub.TagTypeArtist)
+	}
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'bad_tag'").Scan(&badCat); err != nil {
+		t.Fatalf("querying bad_tag category: %v", err)
+	}
+	if badCat != int(hypnohub.TagTypeUnknown) {
+		t.Errorf("bad_tag category = %d, want %d (TagTypeUnknown)", badCat, hypnohub.TagTypeUnknown)
 	}
 }

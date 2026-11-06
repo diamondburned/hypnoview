@@ -233,14 +233,6 @@
 						</div>
 						{{ end }}
 					</div>
-					{{ else }}
-					<div class="tag-cloud">
-						{{ range .Post.Tags }}
-						<a href="/?tags={{ . }}" class="tag-chip tag-chip-general">
-							<span>{{ . }}</span>
-						</a>
-						{{ end }}
-					</div>
 					{{ end }}
 				</div>
 			</div>

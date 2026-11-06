@@ -20,6 +20,12 @@
 	--outline-variant:           light-dark(oklch(0.84 0.02 340),   oklch(0.25 0.025 335));
 	--scrim:                     oklch(0 0 0);
 
+	/* Tag Category Accents (WCAG AA compliant) */
+	--tag-copyright:             light-dark(oklch(0.44 0.18 305),   oklch(0.80 0.14 305));
+	--tag-character:             light-dark(oklch(0.40 0.15 150),   oklch(0.80 0.14 150));
+	--tag-artist:                light-dark(oklch(0.43 0.16 45),    oklch(0.82 0.15 45));
+	--tag-meta:                  light-dark(oklch(0.42 0.14 85),    oklch(0.82 0.13 85));
+
 	/* Sleeker Material Design 3 Radii */
 	--radius-xs: 4px;
 	--radius-sm: 6px;
@@ -909,59 +915,42 @@ body.filter-open {
 	font-weight: 700;
 	text-transform: uppercase;
 	letter-spacing: 0.05em;
-	color: var(--on-surface-variant);
+	color: var(--tag-accent, var(--on-surface-variant));
 }
 
-.tag-category-copyright .tag-category-title,
+.tag-category-copyright,
 .tag-chip-copyright {
-	color: light-dark(oklch(0.45 0.18 305), oklch(0.80 0.14 305));
+	--tag-accent: var(--tag-copyright);
 }
 
-.tag-chip-copyright {
-	background: color-mix(in oklch, light-dark(oklch(0.45 0.18 305), oklch(0.80 0.14 305)) 14%, var(--surface-container-high));
-}
-
-.tag-chip-copyright:hover {
-	background: color-mix(in oklch, light-dark(oklch(0.45 0.18 305), oklch(0.80 0.14 305)) 22%, var(--surface-container-high));
-}
-
-.tag-category-character .tag-category-title,
+.tag-category-character,
 .tag-chip-character {
-	color: light-dark(oklch(0.42 0.15 150), oklch(0.80 0.14 150));
+	--tag-accent: var(--tag-character);
 }
 
-.tag-chip-character {
-	background: color-mix(in oklch, light-dark(oklch(0.42 0.15 150), oklch(0.80 0.14 150)) 14%, var(--surface-container-high));
-}
-
-.tag-chip-character:hover {
-	background: color-mix(in oklch, light-dark(oklch(0.42 0.15 150), oklch(0.80 0.14 150)) 22%, var(--surface-container-high));
-}
-
-.tag-category-artist .tag-category-title,
+.tag-category-artist,
 .tag-chip-artist {
-	color: light-dark(oklch(0.48 0.16 45), oklch(0.82 0.15 45));
+	--tag-accent: var(--tag-artist);
 }
 
-.tag-chip-artist {
-	background: color-mix(in oklch, light-dark(oklch(0.48 0.16 45), oklch(0.82 0.15 45)) 14%, var(--surface-container-high));
-}
-
-.tag-chip-artist:hover {
-	background: color-mix(in oklch, light-dark(oklch(0.48 0.16 45), oklch(0.82 0.15 45)) 22%, var(--surface-container-high));
-}
-
-.tag-category-meta .tag-category-title,
+.tag-category-meta,
 .tag-chip-meta {
-	color: light-dark(oklch(0.45 0.14 85), oklch(0.82 0.13 85));
+	--tag-accent: var(--tag-meta);
 }
 
+.tag-chip-copyright,
+.tag-chip-character,
+.tag-chip-artist,
 .tag-chip-meta {
-	background: color-mix(in oklch, light-dark(oklch(0.45 0.14 85), oklch(0.82 0.13 85)) 14%, var(--surface-container-high));
+	color: var(--tag-accent);
+	background: color-mix(in oklab, var(--tag-accent) 14%, var(--surface-container-high));
 }
 
+.tag-chip-copyright:hover,
+.tag-chip-character:hover,
+.tag-chip-artist:hover,
 .tag-chip-meta:hover {
-	background: color-mix(in oklch, light-dark(oklch(0.45 0.14 85), oklch(0.82 0.13 85)) 22%, var(--surface-container-high));
+	background: color-mix(in oklab, var(--tag-accent) 22%, var(--surface-container-high));
 }
 
 /* Results Header */

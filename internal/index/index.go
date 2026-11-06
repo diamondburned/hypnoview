@@ -12,6 +12,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gaze.d14.pet"
@@ -161,11 +163,20 @@ func (s SortMode) Normalize() (SortMode, error) {
 	}
 }
 
+type inFlightScrape struct {
+	done    chan struct{}
+	updates map[string]hypnohub.TagType
+}
+
 // Store manages the local SQLite database for posts, tags, and score snapshots.
 type Store struct {
-	db     *sql.DB
-	q      *sqlcgen.Queries
-	client *hypnohub.Client
+	db            *sql.DB
+	q             *sqlcgen.Queries
+	client        *hypnohub.Client
+	scrapeRetryAt atomic.Int64
+	scrapeMu      sync.Mutex
+	scrapeFlight  map[hypnohub.PostID]*inFlightScrape
+	bulkTagPage   atomic.Int64
 }
 
 // SetClient attaches an optional Hypnohub client for on-demand and background tag category resolution.
@@ -405,7 +416,6 @@ type ScorePoint struct {
 type TagSummary struct {
 	Name      string `json:"name"`
 	PostCount int    `json:"post_count"`
-	Category  string `json:"category"`
 }
 
 // Stats contains summary statistics for the local index.
@@ -1181,80 +1191,7 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		return nil, nil, fmt.Errorf("getting tags for post %d: %w", id, err)
 	}
 
-	if s.client != nil {
-		hasUnknown := false
-		for _, r := range tagRows {
-			if r.Category == int64(hypnohub.TagCategoryUnknown) {
-				hasUnknown = true
-				break
-			}
-		}
-		if hasUnknown {
-			rCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-			scraped, scrapeErr := s.client.PostViewTags(rCtx, id)
-			if scrapeErr == nil && len(scraped) > 0 {
-				if tx, txErr := s.db.BeginTx(ctx, nil); txErr == nil {
-					qtx := s.q.WithTx(tx)
-					for i := range tagRows {
-						cat := hypnohub.TagTypeGeneral
-						if c, ok := scraped[tagRows[i].Name]; ok {
-							cat = c.Normalize()
-						}
-						tagRows[i].Category = int64(cat)
-						_ = qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
-							Category: int64(cat),
-							Name:     tagRows[i].Name,
-						})
-					}
-					_ = tx.Commit()
-				} else {
-					for i := range tagRows {
-						cat := hypnohub.TagTypeGeneral
-						if c, ok := scraped[tagRows[i].Name]; ok {
-							cat = c.Normalize()
-						}
-						tagRows[i].Category = int64(cat)
-					}
-				}
-			} else if scrapeErr == nil && len(scraped) == 0 {
-				resolved := make(map[string]hypnohub.TagType, 5)
-				count := 0
-				for _, r := range tagRows {
-					if r.Category == int64(hypnohub.TagCategoryUnknown) {
-						if count >= 5 {
-							break
-						}
-						count++
-						tagInfo, tErr := s.client.TagByName(rCtx, r.Name)
-						if tErr != nil {
-							break
-						}
-						if tagInfo != nil {
-							resolved[r.Name] = tagInfo.Type.Normalize()
-						} else {
-							resolved[r.Name] = hypnohub.TagTypeGeneral
-						}
-					}
-				}
-				if len(resolved) > 0 {
-					if tx, txErr := s.db.BeginTx(ctx, nil); txErr == nil {
-						qtx := s.q.WithTx(tx)
-						for i := range tagRows {
-							if cat, ok := resolved[tagRows[i].Name]; ok {
-								tagRows[i].Category = int64(cat)
-								_ = qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
-									Category: int64(cat),
-									Name:     tagRows[i].Name,
-								})
-							}
-						}
-						_ = tx.Commit()
-					}
-				}
-			}
-			cancel()
-		}
-	}
+	s.resolvePostTagCategories(ctx, id, tagRows)
 
 	if len(tagRows) > 0 {
 		postTags := make([]PostTag, len(tagRows))
@@ -1354,13 +1291,135 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 	return result, nil
 }
 
-// TopTags returns the top local indexed tags ordered by post count descending.
-func (s *Store) TopTags(ctx context.Context, limit int) ([]TagSummary, error) {
-	return s.SearchTags(ctx, "", limit)
+// resolvePostTagCategories resolves unknown tag categories (-1) on a post using single-flight coalescing
+// and a 1-minute backoff on upstream failures. Already-known tag categories are never overwritten.
+func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID, tagRows []sqlcgen.GetPostTagsWithCategoryRow) {
+	if s.client == nil || time.Now().Unix() < s.scrapeRetryAt.Load() {
+		return
+	}
+
+	hasUnknown := false
+	for _, r := range tagRows {
+		if r.Category == int64(hypnohub.TagTypeUnknown) {
+			hasUnknown = true
+			break
+		}
+	}
+	if !hasUnknown {
+		return
+	}
+
+	s.scrapeMu.Lock()
+	if s.scrapeFlight == nil {
+		s.scrapeFlight = make(map[hypnohub.PostID]*inFlightScrape)
+	}
+	if flight, ok := s.scrapeFlight[id]; ok {
+		s.scrapeMu.Unlock()
+		select {
+		case <-flight.done:
+			for i := range tagRows {
+				if tagRows[i].Category == int64(hypnohub.TagTypeUnknown) {
+					if cat, exists := flight.updates[tagRows[i].Name]; exists {
+						tagRows[i].Category = int64(cat)
+					}
+				}
+			}
+		case <-ctx.Done():
+		}
+		return
+	}
+
+	flight := &inFlightScrape{
+		done: make(chan struct{}),
+	}
+	s.scrapeFlight[id] = flight
+	s.scrapeMu.Unlock()
+
+	defer func() {
+		close(flight.done)
+		s.scrapeMu.Lock()
+		delete(s.scrapeFlight, id)
+		s.scrapeMu.Unlock()
+	}()
+
+	if time.Now().Unix() < s.scrapeRetryAt.Load() {
+		return
+	}
+
+	rCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer cancel()
+
+	scraped, scrapeErr := s.client.PostViewTags(rCtx, id)
+	if scrapeErr != nil {
+		slog.Warn("on-demand post tag scrape failed", "post_id", id, "err", scrapeErr)
+		s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+		return
+	}
+
+	updates := make(map[string]hypnohub.TagType)
+	fallbackCount := 0
+	for i := range tagRows {
+		if tagRows[i].Category != int64(hypnohub.TagTypeUnknown) {
+			continue
+		}
+		name := tagRows[i].Name
+		if cat, ok := scraped[name]; ok {
+			norm := cat.Normalize()
+			updates[name] = norm
+			tagRows[i].Category = int64(norm)
+			continue
+		}
+		if fallbackCount < 5 {
+			fallbackCount++
+			tagInfo, err := s.client.TagByName(rCtx, name)
+			if err != nil {
+				slog.Warn("on-demand tag lookup failed", "post_id", id, "tag", name, "err", err)
+				s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+				break
+			}
+			if tagInfo != nil {
+				norm := tagInfo.Type.Normalize()
+				updates[name] = norm
+				tagRows[i].Category = int64(norm)
+			}
+		}
+	}
+
+	flight.updates = updates
+	if len(updates) > 0 {
+		if err := s.persistTagCategories(ctx, updates); err != nil {
+			slog.Warn("failed to persist on-demand tag categories", "post_id", id, "err", err)
+		}
+	}
 }
 
-// ResolveUnknownTagCategories resolves up to limit tags whose category is still TagCategoryUnknown (-1)
-// using the configured Hypnohub client (or the provided tag lookup function) and commits the updates in a single transaction.
+func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hypnohub.TagType) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tag category tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	qtx := s.q.WithTx(tx)
+	for name, cat := range updates {
+		if err := qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
+			Category: int64(cat),
+			Name:     name,
+		}); err != nil {
+			return fmt.Errorf("updating tag category for %q: %w", name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing tag category tx: %w", err)
+	}
+	return nil
+}
+
+// ResolveUnknownTagCategories resolves up to limit tags whose category is still TagTypeUnknown (-1)
+// using the configured Hypnohub client and commits positively resolved updates in a single transaction.
 func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int, error) {
 	if s.client == nil {
 		return 0, nil
@@ -1376,44 +1435,53 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		return 0, nil
 	}
 
-	resolved := make(map[string]hypnohub.TagType, len(names))
-	for _, name := range names {
-		if ctx.Err() != nil {
-			break
-		}
-		tagInfo, err := s.client.TagByName(ctx, name)
-		if err != nil {
-			break
-		}
-		if tagInfo != nil {
-			resolved[name] = tagInfo.Type.Normalize()
-		} else {
-			resolved[name] = hypnohub.TagTypeGeneral
+	rCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	updates := make(map[string]hypnohub.TagType, len(names))
+
+	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve many tags in 1 request.
+	page := int(s.bulkTagPage.Load())
+	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr == nil && len(bulkTags) > 0 {
+		s.bulkTagPage.Store(int64((page + 1) % 50))
+		for _, bt := range bulkTags {
+			name := strings.ToLower(strings.TrimSpace(bt.Name))
+			if name != "" {
+				updates[name] = bt.Type.Normalize()
+			}
 		}
 	}
-	if len(resolved) == 0 {
+
+	consecutiveErrors := 0
+	for _, name := range names {
+		if _, already := updates[name]; already {
+			continue
+		}
+		if rCtx.Err() != nil {
+			break
+		}
+		tagInfo, err := s.client.TagByName(rCtx, name)
+		if err != nil {
+			slog.Warn("failed to resolve tag category", "tag", name, "err", err)
+			consecutiveErrors++
+			if consecutiveErrors >= 3 {
+				break
+			}
+			continue
+		}
+		consecutiveErrors = 0
+		if tagInfo != nil {
+			updates[name] = tagInfo.Type.Normalize()
+		}
+	}
+	if len(updates) == 0 {
 		return 0, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin tag category tx: %w", err)
+	if err := s.persistTagCategories(ctx, updates); err != nil {
+		return 0, err
 	}
-	defer tx.Rollback()
-
-	qtx := s.q.WithTx(tx)
-	for name, cat := range resolved {
-		if err := qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
-			Category: int64(cat),
-			Name:     name,
-		}); err != nil {
-			return 0, fmt.Errorf("updating tag category for %q: %w", name, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("committing tag category tx: %w", err)
-	}
-	return len(resolved), nil
+	return len(updates), nil
 }
 
 // SearchTags searches local indexed tags by prefix or substring, ordered by post count descending.
@@ -1436,7 +1504,6 @@ func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagS
 			tags[i] = TagSummary{
 				Name:      r.Name,
 				PostCount: int(r.PostCount),
-				Category:  hypnohub.TagType(r.Category).Slug(),
 			}
 		}
 		return tags, nil
@@ -1456,7 +1523,6 @@ func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagS
 		tags[i] = TagSummary{
 			Name:      r.Name,
 			PostCount: int(r.PostCount),
-			Category:  hypnohub.TagType(r.Category).Slug(),
 		}
 	}
 	return tags, nil

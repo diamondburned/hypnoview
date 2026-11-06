@@ -63,7 +63,14 @@ func TestParsePostViewTags(t *testing.T) {
 			<li class="tag-type-artist tag">
 				<a href="index.php?page=wiki&s=list&search=thedrawing">?</a>
 				<a href="index.php?page=post&amp;s=list&amp;tags=thedrawing">thedrawing</a>
+				<a href="index.php?page=tag&amp;s=edit&amp;id=123">edit</a>
 				<span class="tag-count">43</span>
+			</li>
+			<li class="tag-type-artist tag">
+				<a href="index.php?page=wiki&s=list&search=kuro_">?</a>
+				<a href="index.php?page=post&amp;s=list&amp;tags=kuro_">kuro </a>
+				<a href="#">?</a>
+				<span class="tag-count">19</span>
 			</li>
 			<li><h6>General</h6></li>
 			<li class="tag-type-general tag">
@@ -90,6 +97,7 @@ func TestParsePostViewTags(t *testing.T) {
 		"elise_(nisemono)":  TagTypeCharacter,
 		"jack_o'_valentine": TagTypeCharacter,
 		"thedrawing":        TagTypeArtist,
+		"kuro_":             TagTypeArtist,
 		"glowing_eyes":      TagTypeGeneral,
 		"simple_background": TagTypeMeta,
 		"highres":           TagTypeMeta,
@@ -103,11 +111,17 @@ func TestParsePostViewTags(t *testing.T) {
 			t.Errorf("ParsePostViewTags[%q] = %v (ok=%v), want %v", k, actual, ok, expectedType)
 		}
 	}
+
+	// HTML page with no <ul id="tag-sidebar"> must return nil even if <li class="tag-type-artist"> appears elsewhere.
+	noSidebarHTML := `<div class="comments"><ul class="other"><li class="tag-type-artist"><a href="index.php?page=post&s=list&tags=fake_artist">fake_artist</a></li></ul></div>`
+	if stray := ParsePostViewTags(noSidebarHTML); stray != nil {
+		t.Errorf("expected nil when <ul id=\"tag-sidebar\"> is absent, got %v", stray)
+	}
 }
 
 func TestTagTypeMethods(t *testing.T) {
-	if TagCategoryUnknown.Normalize() != TagTypeGeneral {
-		t.Errorf("TagCategoryUnknown.Normalize() = %v, want TagTypeGeneral", TagCategoryUnknown.Normalize())
+	if TagTypeUnknown.Normalize() != TagTypeGeneral {
+		t.Errorf("TagTypeUnknown.Normalize() = %v, want TagTypeGeneral", TagTypeUnknown.Normalize())
 	}
 	order := []TagType{
 		TagTypeCopyright,
@@ -120,9 +134,6 @@ func TestTagTypeMethods(t *testing.T) {
 	wantSlugs := []string{"copyright", "character", "artist", "general", "meta"}
 
 	for i, cat := range order {
-		if got := cat.SortOrder(); got != i {
-			t.Errorf("%v.SortOrder() = %d, want %d", cat, got, i)
-		}
 		if got := cat.Label(); got != wantLabels[i] {
 			t.Errorf("%v.Label() = %q, want %q", cat, got, wantLabels[i])
 		}

@@ -94,7 +94,7 @@ WHERE post_id = ?
 ORDER BY poll_time ASC;
 
 -- name: ListPopularTags :many
-SELECT name, post_count, category
+SELECT name, post_count
 FROM tags
 WHERE post_count > 0
 ORDER BY post_count DESC, name ASC
@@ -104,7 +104,6 @@ LIMIT ?;
 SELECT
     name,
     post_count,
-    category,
     like(sqlc.arg(prefix), name, '\') AS is_prefix
 FROM tags
 WHERE post_count > 0 AND like(sqlc.arg(pattern), name, '\')

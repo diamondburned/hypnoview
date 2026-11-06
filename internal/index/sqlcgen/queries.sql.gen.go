@@ -528,7 +528,7 @@ func (q *Queries) ListGroupPosts(ctx context.Context, groupID int64) ([]Post, er
 }
 
 const listPopularTags = `-- name: ListPopularTags :many
-SELECT name, post_count, category
+SELECT name, post_count
 FROM tags
 WHERE post_count > 0
 ORDER BY post_count DESC, name ASC
@@ -538,12 +538,11 @@ LIMIT ?
 type ListPopularTagsRow struct {
 	Name      string
 	PostCount int64
-	Category  int64
 }
 
 // ListPopularTags
 //
-//	SELECT name, post_count, category
+//	SELECT name, post_count
 //	FROM tags
 //	WHERE post_count > 0
 //	ORDER BY post_count DESC, name ASC
@@ -557,7 +556,7 @@ func (q *Queries) ListPopularTags(ctx context.Context, limit int64) ([]ListPopul
 	var items []ListPopularTagsRow
 	for rows.Next() {
 		var i ListPopularTagsRow
-		if err := rows.Scan(&i.Name, &i.PostCount, &i.Category); err != nil {
+		if err := rows.Scan(&i.Name, &i.PostCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -625,7 +624,6 @@ const searchTagsByPrefix = `-- name: SearchTagsByPrefix :many
 SELECT
     name,
     post_count,
-    category,
     like(?1, name, '\') AS is_prefix
 FROM tags
 WHERE post_count > 0 AND like(?2, name, '\')
@@ -645,7 +643,6 @@ type SearchTagsByPrefixParams struct {
 type SearchTagsByPrefixRow struct {
 	Name      string
 	PostCount int64
-	Category  int64
 	IsPrefix  int64
 }
 
@@ -654,7 +651,6 @@ type SearchTagsByPrefixRow struct {
 //	SELECT
 //	    name,
 //	    post_count,
-//	    category,
 //	    like(?1, name, '\') AS is_prefix
 //	FROM tags
 //	WHERE post_count > 0 AND like(?2, name, '\')
@@ -672,12 +668,7 @@ func (q *Queries) SearchTagsByPrefix(ctx context.Context, arg SearchTagsByPrefix
 	var items []SearchTagsByPrefixRow
 	for rows.Next() {
 		var i SearchTagsByPrefixRow
-		if err := rows.Scan(
-			&i.Name,
-			&i.PostCount,
-			&i.Category,
-			&i.IsPrefix,
-		); err != nil {
+		if err := rows.Scan(&i.Name, &i.PostCount, &i.IsPrefix); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
