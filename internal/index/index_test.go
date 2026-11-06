@@ -2651,14 +2651,16 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 	}
 
 	var postViewHits atomic.Int32
-	var refreshPhase atomic.Bool
+	var post287540Phase atomic.Int32
+	var surpriseRefresh atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287540" {
 			postViewHits.Add(1)
 			time.Sleep(30 * time.Millisecond)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if refreshPhase.Load() {
+			switch post287540Phase.Load() {
+			case 1:
 				// Return comments [2, 3] (comment 1 deleted upstream, comment 3 added).
 				_, _ = w.Write([]byte(`
 					<ul id="tag-sidebar">
@@ -2691,8 +2693,17 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 						</div>
 					</div>`))
 				return
+			case 2:
+				// All comments deleted upstream, valid tag-sidebar present.
+				_, _ = w.Write([]byte(`
+					<ul id="tag-sidebar">
+						<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=bleach">bleach</a></li>
+						<li class="tag-type-character tag"><a href="index.php?page=post&s=list&tags=orihime_inoue">orihime inoue</a></li>
+					</ul>
+					<div id="comment-list"></div>`))
+				return
 			}
-			// Initial phase: return comments [1, 2].
+			// Initial phase 0: return comments [1, 2].
 			_, _ = w.Write([]byte(`
 				<ul id="tag-sidebar">
 					<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=bleach">bleach</a></li>
@@ -2734,9 +2745,46 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 				</div>`))
 			return
 		}
+		if q.Get("page") == "dapi" && q.Get("s") == "comment" && q.Get("post_id") == "287540" {
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><comments type="array"/>`))
+			return
+		}
 		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287542" {
 			postViewHits.Add(1)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if surpriseRefresh.Load() {
+				_, _ = w.Write([]byte(`
+					<ul id="tag-sidebar">
+						<li class="tag-type-artist tag"><a href="index.php?page=post&s=list&tags=surprise_tag">surprise tag</a></li>
+					</ul>
+					<div id="comment-list">
+						<script type="text/javascript">var posts = {}; posts[287542] = {};</script>
+						<div id="c700001">
+							<div class="horizontalFlexWithMargins">
+								<div class="comment-left-col">
+									<a href="index.php?page=account&amp;s=profile&amp;uname=SurpriseCommenter">SurpriseCommenter</a>
+								</div>
+								<div class="comment-right-col">
+									<div><b>Posted on 2026-11-05 23:00:00 <br />Score: <a id="sc700001">4</a></b></div>
+									<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Comment discovered during tag scrape</div>
+								</div>
+							</div>
+						</div>
+						<div id="c700002">
+							<div class="horizontalFlexWithMargins">
+								<div class="comment-left-col">
+									<a href="index.php?page=account&amp;s=profile&amp;uname=SecondSurprise">SecondSurprise</a>
+								</div>
+								<div class="comment-right-col">
+									<div><b>Posted on 2026-11-05 23:15:00 <br />Score: <a id="sc700002">5</a></b></div>
+									<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Added after TTL on has_comments=false post</div>
+								</div>
+							</div>
+						</div>
+					</div>`))
+				return
+			}
 			_, _ = w.Write([]byte(`
 				<ul id="tag-sidebar">
 					<li class="tag-type-artist tag"><a href="index.php?page=post&s=list&tags=surprise_tag">surprise tag</a></li>
@@ -2816,7 +2864,7 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 	}
 
 	// 3. TTL refresh & deleted comment pruning: age comments_fetched_at by 2 hours, upstream now returns [2, 3].
-	refreshPhase.Store(true)
+	post287540Phase.Store(1)
 	if _, err := store.DB().ExecContext(ctx, `UPDATE posts SET comments_fetched_at = ? WHERE id = 287540`, time.Now().Add(-2*time.Hour).Unix()); err != nil {
 		t.Fatalf("aging comments_fetched_at: %v", err)
 	}
@@ -2826,6 +2874,19 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 	}
 	if len(pRefreshed.Comments) != 2 || pRefreshed.Comments[0].ID != 626854 || pRefreshed.Comments[1].ID != 626855 {
 		t.Fatalf("expected refreshed comments [626854, 626855] with 626853 pruned, got %+v", pRefreshed.Comments)
+	}
+
+	// 3b. Total upstream comment deletion: age comments_fetched_at again, upstream now returns 0 comments with valid tag-sidebar.
+	post287540Phase.Store(2)
+	if _, err := store.DB().ExecContext(ctx, `UPDATE posts SET comments_fetched_at = ? WHERE id = 287540`, time.Now().Add(-2*time.Hour).Unix()); err != nil {
+		t.Fatalf("aging comments_fetched_at for total deletion: %v", err)
+	}
+	pCleared, _, err := store.GetPost(ctx, 287540)
+	if err != nil {
+		t.Fatalf("GetPost(287540) after total comment deletion failed: %v", err)
+	}
+	if len(pCleared.Comments) != 0 {
+		t.Fatalf("expected 0 comments after total upstream comment deletion, got %+v", pCleared.Comments)
 	}
 
 	// 4. Post with HasComments=false (287541) makes 0 comment scrapes when its tags are already known.
@@ -2838,7 +2899,7 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 		t.Errorf("expected 0 upstream hits for post with HasComments=false, got %d", hits)
 	}
 
-	// 5. Post with HasComments=false (287542) that acquires comments during a tag-category scrape returns those comments from GetPost and GetPostComments.
+	// 5. Post with HasComments=false (287542) that acquires comments during a tag-category scrape returns those comments from GetPost and GetPostComments, and refreshes them after TTL expiry.
 	pSurprise, _, err := store.GetPost(ctx, 287542)
 	if err != nil {
 		t.Fatalf("GetPost(287542) failed: %v", err)
@@ -2849,6 +2910,15 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 	surpriseComments, err := store.GetPostComments(ctx, 287542)
 	if err != nil || len(surpriseComments) != 1 || surpriseComments[0].ID != 700001 {
 		t.Fatalf("expected GetPostComments(287542) to return stored comment 700001 even when has_comments=0, got (%+v, %v)", surpriseComments, err)
+	}
+
+	surpriseRefresh.Store(true)
+	if _, err := store.DB().ExecContext(ctx, `UPDATE posts SET comments_fetched_at = ? WHERE id = 287542`, time.Now().Add(-2*time.Hour).Unix()); err != nil {
+		t.Fatalf("aging comments_fetched_at for 287542: %v", err)
+	}
+	surpriseRefreshed, err := store.GetPostComments(ctx, 287542)
+	if err != nil || len(surpriseRefreshed) != 2 || surpriseRefreshed[0].ID != 700001 || surpriseRefreshed[1].ID != 700002 {
+		t.Fatalf("expected GetPostComments(287542) after TTL expiry to refresh stored comments on has_comments=0 post, got (%+v, %v)", surpriseRefreshed, err)
 	}
 
 	// 6. Soft failure when PostView returns 0 comments and CommentsDAPI returns HTTP 500 must NOT stamp comments_fetched_at and must set scrapeRetryAt.

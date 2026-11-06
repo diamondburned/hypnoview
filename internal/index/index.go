@@ -1197,7 +1197,7 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		return nil, nil, fmt.Errorf("getting comments for post %d: %w", id, err)
 	}
 
-	needsComments := postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt)
+	needsComments := (postRow.HasComments != 0 || len(commentRows) > 0) && s.needsCommentScrape(postRow.CommentsFetchedAt)
 	s.resolvePostView(ctx, id, tagRows, needsComments)
 
 	if reloaded, err := s.q.GetPostTagsWithCategory(ctx, int64(id)); err == nil {
@@ -1322,7 +1322,7 @@ func (s *Store) GetPostComments(ctx context.Context, id hypnohub.PostID) ([]hypn
 		return nil, fmt.Errorf("getting comments for post %d: %w", id, err)
 	}
 
-	if postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt) {
+	if (postRow.HasComments != 0 || len(commentRows) > 0) && s.needsCommentScrape(postRow.CommentsFetchedAt) {
 		tagRows, _ := s.q.GetPostTagsWithCategory(ctx, int64(id))
 		s.resolvePostView(ctx, id, tagRows, true)
 		if reloaded, err := s.q.GetPostComments(ctx, int64(id)); err == nil {

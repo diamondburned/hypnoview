@@ -314,7 +314,11 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 		}
 		if q.Get("page") == "dapi" && q.Get("s") == "comment" && q.Get("post_id") == "287999" {
 			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><comments type="array"><comment id="700001" post_id="287999" creator="FallbackUser" creator_id="42" created_at="2026-11-06 12:00" body="Fallback &amp; clean"/></comments>`)
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><comments type="array">
+				<comment id="700001" post_id="287999" creator="FallbackUser" creator_id="42" created_at="2026-11-06 12:00" body="Fallback &amp; clean"/>
+				<comment id="700002" post_id="287999" creator="OddDateUser" creator_id="43" created_at="Nov 5, 2026" body="Still kept"/>
+				<comment id="700003" post_id="287999" creator="" body="   "/>
+			</comments>`)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -329,7 +333,13 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 		t.Fatalf("client.PostView(287540) = (%+v, %v)", c1, err)
 	}
 	c2, err := client.CommentsDAPI(context.Background(), 287999)
-	if err != nil || len(c2) != 1 || c2[0].Creator != "FallbackUser" || c2[0].Body != "Fallback & clean" || c2[0].CreatedAt.FormatComment() != "2026-11-06 12:00" {
-		t.Fatalf("client.CommentsDAPI(287999) = (%+v, %v)", c2, err)
+	if err != nil || len(c2) != 2 {
+		t.Fatalf("client.CommentsDAPI(287999) = (%+v, %v), want 2 comments", c2, err)
+	}
+	if c2[0].Creator != "FallbackUser" || c2[0].Body != "Fallback & clean" || c2[0].CreatedAt.FormatComment() != "2026-11-06 12:00" {
+		t.Errorf("unexpected c2[0]: %+v", c2[0])
+	}
+	if c2[1].Creator != "OddDateUser" || c2[1].Body != "Still kept" || !c2[1].CreatedAt.IsZero() {
+		t.Errorf("unexpected c2[1] (expected IsZero CreatedAt): %+v", c2[1])
 	}
 }

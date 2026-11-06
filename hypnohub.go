@@ -552,28 +552,36 @@ func (c *Client) CommentsDAPI(ctx context.Context, postID PostID) ([]Comment, er
 	}
 	endpoint := c.baseURL() + "/index.php?" + q.Encode()
 
+	type dapiComment struct {
+		Comment
+		CreatedAt string `xml:"created_at,attr"`
+	}
 	type commentResponse struct {
-		XMLName  xml.Name  `xml:"comments"`
-		Comments []Comment `xml:"comment"`
+		XMLName  xml.Name      `xml:"comments"`
+		Comments []dapiComment `xml:"comment"`
 	}
 	resp, err := getXML[commentResponse](ctx, c.HTTPClient, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	for i := range resp.Comments {
-		if resp.Comments[i].PostID == 0 {
-			resp.Comments[i].PostID = postID
+	comments := make([]Comment, 0, len(resp.Comments))
+	for _, raw := range resp.Comments {
+		cm := raw.Comment
+		if cm.PostID == 0 {
+			cm.PostID = postID
 		}
-		resp.Comments[i].Creator = strings.TrimSpace(html.UnescapeString(resp.Comments[i].Creator))
-		resp.Comments[i].Body = cleanCommentBody(resp.Comments[i].Body)
+		cm.Creator = strings.TrimSpace(html.UnescapeString(cm.Creator))
+		cm.CreatedAt, _ = ParseDate(raw.CreatedAt)
+		cm.Body = cleanCommentBody(cm.Body)
+		if cm.Creator == "" && cm.Body == "" {
+			continue
+		}
+		comments = append(comments, cm)
 	}
-	resp.Comments = slices.DeleteFunc(resp.Comments, func(c Comment) bool {
-		return c.Creator == "" && c.Body == ""
-	})
-	slices.SortFunc(resp.Comments, func(a, b Comment) int {
+	slices.SortFunc(comments, func(a, b Comment) int {
 		return int(a.ID - b.ID)
 	})
-	return resp.Comments, nil
+	return comments, nil
 }
 
 // ParsePostViewComments extracts comments from a Gelbooru <div id="comment-list"> HTML page or snippet.
