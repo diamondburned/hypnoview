@@ -3,6 +3,7 @@ package index
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -14,7 +15,7 @@ import (
 	"time"
 
 	"gaze.d14.pet"
-	"gaze.d14.pet/internal/index/sqlcgen"
+	"libdb.so/lazymigrate"
 )
 
 func TestStoreRateAndDeltaRanking(t *testing.T) {
@@ -595,43 +596,21 @@ func TestBenchmark100kPosts(t *testing.T) {
 	t.Logf("Database stats: %d posts, %d tags, %d snapshots", stats.TotalPosts, stats.TotalTags, stats.TotalSnapshots)
 
 	// 1. Homepage Browse feed: window=all, sort=new
-	t0 := time.Now()
-	refNow := store.latestReferenceTime(ctx)
-	tRef := time.Since(t0)
-
-	t1 := time.Now()
-	total, err := store.q.CountPostsAll(ctx, sqlcgen.CountPostsAllParams{
-		Rating:    "",
-		MediaType: "",
-	})
-	if err != nil {
-		t.Fatalf("CountPostsAll failed: %v", err)
-	}
-	tCount := time.Since(t1)
-
-	t2 := time.Now()
-	rows, err := store.q.ListPostsAllSortNew(ctx, sqlcgen.ListPostsAllSortNewParams{
-		NowUnix:   refNow.Unix(),
-		Tau:       168.0,
-		Rating:    "",
-		MediaType: "",
-		Limit:     48,
-		Offset:    0,
-	})
-	if err != nil {
-		t.Fatalf("ListPostsAllSortNew failed: %v", err)
-	}
-	tQuery := time.Since(t2)
-
-	t.Logf("Breakdown: refNow=%s, CountPostsAll=%s (total=%d), ListPostsAllSortNew=%s (rows=%d)",
-		tRef, tCount, total, tQuery, len(rows))
-
 	start := time.Now()
 	resBrowse, err := store.QueryPosts(ctx, QueryOptions{
 		Window: WindowAllTime,
 		Sort:   SortNew,
 		Limit:  48,
 	})
+	browseDur := time.Since(start)
+	if err != nil {
+		t.Fatalf("QueryPosts(window=all, sort=new) failed: %v", err)
+	}
+	if len(resBrowse.Posts) == 0 {
+		t.Errorf("expected posts in browse query, got 0")
+	}
+	t.Logf("Browse feed (window=all, sort=new) took %s (total=%d, returned=%d)",
+		browseDur, resBrowse.Total, len(resBrowse.Posts))
 	elapsedBrowse := time.Since(start)
 	if err != nil {
 		t.Fatalf("QueryPosts(all, new) failed: %v", err)
@@ -1294,5 +1273,252 @@ func TestCollapseGroupsWithTagAndRatingFilters(t *testing.T) {
 	}
 	if resRating.Posts[0].ID != 901 {
 		t.Errorf("expected post 901, got %d", resRating.Posts[0].ID)
+	}
+}
+
+func TestMigrationV5ToV6HealsStaleGroups(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "v5_to_v6.db")
+
+	// 1. Prepare v5 schema by taking first 5 versions from schemaSQL
+	versions := strings.Split(schemaSQL, "-- NEW VERSION --")
+	if len(versions) < 6 {
+		t.Fatalf("expected at least 6 versions in schemaSQL, got %d", len(versions))
+	}
+	v5Schema := strings.Join(versions[:5], "-- NEW VERSION --")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening raw db: %v", err)
+	}
+	if err := lazymigrate.Migrate(ctx, db, v5Schema); err != nil {
+		db.Close()
+		t.Fatalf("migrating to v5: %v", err)
+	}
+
+	var userVersion int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		db.Close()
+		t.Fatalf("querying user_version: %v", err)
+	}
+	if userVersion != 5 {
+		db.Close()
+		t.Fatalf("expected user_version 5, got %d", userVersion)
+	}
+
+	// Insert dummy pools and pool_posts to ensure they exist at v5
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO pools (id, name, updated_at) VALUES (1, 'Test Pool', 123456);
+		INSERT INTO pool_posts (pool_id, post_id, seq) VALUES (1, 101, 1);
+	`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting into pools/pool_posts: %v", err)
+	}
+
+	// Insert posts with stale/erroneous grouping values
+	nowUnix := time.Now().Unix()
+	insertQuery := `
+		INSERT INTO posts (
+			id, created_at, changed_at, score, rating, creator_id, parent_id,
+			md5, source, status, has_notes, has_comments, has_children,
+			file_url, file_ext, width, height, sample_url, sample_width, sample_height,
+			preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at,
+			group_id, group_is_latest, group_page_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	// 101 & 102 are parent/child, but set with stale group_id 999 and count 5
+	_, err = db.ExecContext(ctx, insertQuery,
+		101, nowUnix-200, nowUnix-200, 10, "s", 1, 0,
+		"md5_101", "", "active", 0, 0, 1,
+		"https://example.com/101.jpg", "jpg", 100, 100, "", 0, 0,
+		"", 0, 0, "test", nowUnix, nowUnix,
+		999, 0, 5,
+	)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting post 101: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, insertQuery,
+		102, nowUnix-100, nowUnix-100, 15, "s", 1, 101,
+		"md5_102", "", "active", 0, 0, 0,
+		"https://example.com/102.jpg", "jpg", 100, 100, "", 0, 0,
+		"", 0, 0, "test", nowUnix, nowUnix,
+		999, 0, 5,
+	)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting post 102: %v", err)
+	}
+
+	// 103 is standalone active post with stale group_id 888
+	_, err = db.ExecContext(ctx, insertQuery,
+		103, nowUnix-50, nowUnix-50, 5, "s", 1, 0,
+		"md5_103", "", "active", 0, 0, 0,
+		"https://example.com/103.jpg", "jpg", 100, 100, "", 0, 0,
+		"", 0, 0, "test", nowUnix, nowUnix,
+		888, 0, 3,
+	)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting post 103: %v", err)
+	}
+
+	// 104 is deleted child of 101, should be reset and excluded from active group
+	_, err = db.ExecContext(ctx, insertQuery,
+		104, nowUnix-10, nowUnix-10, 0, "s", 1, 101,
+		"md5_104", "", "deleted", 0, 0, 0,
+		"https://example.com/104.jpg", "jpg", 100, 100, "", 0, 0,
+		"", 0, 0, "test", nowUnix, nowUnix,
+		101, 1, 2,
+	)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting post 104: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing raw db: %v", err)
+	}
+
+	// 2. Open store with index.Open, triggering migration from v5 to v6
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed migrating v5 to v6: %v", err)
+	}
+	defer store.Close()
+
+	// Verify user_version is 6
+	if err := store.DB().QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		t.Fatalf("querying user_version after migration: %v", err)
+	}
+	if userVersion != 6 {
+		t.Errorf("expected user_version 6, got %d", userVersion)
+	}
+
+	// Verify pools and pool_posts are dropped
+	var tableCount int
+	err = store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('pools', 'pool_posts')").Scan(&tableCount)
+	if err != nil {
+		t.Fatalf("checking tables: %v", err)
+	}
+	if tableCount != 0 {
+		t.Errorf("expected pools and pool_posts to be dropped, found %d", tableCount)
+	}
+
+	// Verify posts grouping healed
+	p101, _, err := store.GetPost(ctx, 101)
+	if err != nil {
+		t.Fatalf("getting post 101: %v", err)
+	}
+	if p101.GroupID != 101 || p101.GroupPageCount != 2 || p101.GroupIsLatest {
+		t.Errorf("post 101: GroupID=%d, PageCount=%d, Latest=%v", p101.GroupID, p101.GroupPageCount, p101.GroupIsLatest)
+	}
+
+	p102, _, err := store.GetPost(ctx, 102)
+	if err != nil {
+		t.Fatalf("getting post 102: %v", err)
+	}
+	if p102.GroupID != 101 || p102.GroupPageCount != 2 || !p102.GroupIsLatest {
+		t.Errorf("post 102: GroupID=%d, PageCount=%d, Latest=%v", p102.GroupID, p102.GroupPageCount, p102.GroupIsLatest)
+	}
+
+	p103, _, err := store.GetPost(ctx, 103)
+	if err != nil {
+		t.Fatalf("getting post 103: %v", err)
+	}
+	if p103.GroupID != 0 || p103.GroupPageCount != 1 || !p103.GroupIsLatest {
+		t.Errorf("post 103: GroupID=%d, PageCount=%d, Latest=%v", p103.GroupID, p103.GroupPageCount, p103.GroupIsLatest)
+	}
+
+	p104, _, err := store.GetPost(ctx, 104)
+	if err != nil {
+		t.Fatalf("getting post 104: %v", err)
+	}
+	if p104.GroupID != 0 || p104.GroupPageCount != 1 || p104.GroupIsLatest {
+		t.Errorf("post 104 (deleted): GroupID=%d, PageCount=%d, Latest=%v", p104.GroupID, p104.GroupPageCount, p104.GroupIsLatest)
+	}
+}
+
+func TestPostGroupLateArrivingParent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+
+	// 1. Ingest child post first: ParentID = 1001, but 1001 is NOT yet in DB
+	childBatch := []hypnohub.Post{
+		{
+			ID:        1002,
+			ParentID:  1001,
+			Score:     20,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "comic hypnosis",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour)),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, childBatch, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch childBatch failed: %v", err)
+	}
+
+	p1002, _, err := store.GetPost(ctx, 1002)
+	if err != nil {
+		t.Fatalf("getting post 1002: %v", err)
+	}
+	// With parent unindexed and no siblings, 1002 is standalone
+	if p1002.GroupID != 0 || p1002.GroupPageCount != 1 || !p1002.GroupIsLatest {
+		t.Errorf("post 1002 initial: GroupID=%d, PageCount=%d, Latest=%v", p1002.GroupID, p1002.GroupPageCount, p1002.GroupIsLatest)
+	}
+
+	// 2. Late-arriving parent post 1001 is ingested
+	parentBatch := []hypnohub.Post{
+		{
+			ID:          1001,
+			ParentID:    0,
+			HasChildren: true,
+			Score:       10,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "comic hypnosis",
+			Status:      "active",
+			CreatedAt:   hypnohub.Date(now.Add(-2 * time.Hour)),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, parentBatch, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch parentBatch failed: %v", err)
+	}
+
+	// 3. Both posts should now be linked into group 1001 with count 2
+	p1001, _, err := store.GetPost(ctx, 1001)
+	if err != nil {
+		t.Fatalf("getting post 1001: %v", err)
+	}
+	if p1001.GroupID != 1001 || p1001.GroupPageCount != 2 || p1001.GroupIsLatest {
+		t.Errorf("post 1001 after parent arrived: GroupID=%d, PageCount=%d, Latest=%v", p1001.GroupID, p1001.GroupPageCount, p1001.GroupIsLatest)
+	}
+
+	p1002, _, err = store.GetPost(ctx, 1002)
+	if err != nil {
+		t.Fatalf("getting post 1002 after parent arrived: %v", err)
+	}
+	if p1002.GroupID != 1001 || p1002.GroupPageCount != 2 || !p1002.GroupIsLatest {
+		t.Errorf("post 1002 after parent arrived: GroupID=%d, PageCount=%d, Latest=%v", p1002.GroupID, p1002.GroupPageCount, p1002.GroupIsLatest)
+	}
+
+	groupPosts, err := store.GetGroupPosts(ctx, 1001)
+	if err != nil {
+		t.Fatalf("GetGroupPosts(1001) failed: %v", err)
+	}
+	if len(groupPosts) != 2 {
+		t.Fatalf("expected 2 group posts, got %d", len(groupPosts))
+	}
+	if groupPosts[0].ID != 1001 || groupPosts[1].ID != 1002 {
+		t.Errorf("unexpected group posts: [%d, %d]", groupPosts[0].ID, groupPosts[1].ID)
 	}
 }

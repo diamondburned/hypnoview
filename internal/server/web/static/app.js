@@ -531,9 +531,6 @@ function bindAutocompleteBox(inputEl, boxEl, onSelect) {
 	boxEl.addEventListener("htmx:afterSwap", () => {
 		activeIdx = -1;
 	});
-	inputEl.addEventListener("htmx:afterSwap", () => {
-		activeIdx = -1;
-	});
 
 	inputEl.addEventListener("keydown", (e) => {
 		const items = getItems();
@@ -608,7 +605,7 @@ document.getElementById("settings-json-apply-btn")?.addEventListener("click", ()
 
 settingsResetBtn?.addEventListener("click", () => {
 	if (confirm("Reset all settings & preferences to defaults?")) {
-		saveSettings({ ...DEFAULT_SETTINGS });
+		saveSettings(structuredClone(DEFAULT_SETTINGS));
 		syncSettingsDialogUI();
 	}
 });
@@ -835,24 +832,26 @@ function createZoomableMediaViewer(options) {
 		const sh = stage.clientHeight;
 		const ar = postW / postH;
 
+		const isLightbox = stage.id === "lightbox-stage" || stage.classList.contains("lightbox-stage");
 		const zoomMode = currentSettings.zoomMode || "fill-width";
-		const maxWidthCap = Math.min(sw, 1000);
+		const maxWidthCap = isLightbox ? Math.max(sw, postW) : Math.min(sw, 1000);
 
 		let computedW;
 		if (zoomMode === "original") {
-			computedW = Math.min(postW, maxWidthCap);
+			computedW = isLightbox ? postW : Math.min(postW, maxWidthCap);
 		} else if (zoomMode === "2x") {
-			computedW = Math.min(Math.round(r.width * 2), maxWidthCap);
+			computedW = isLightbox ? Math.round(r.width * 2) : Math.min(Math.round(r.width * 2), maxWidthCap);
 		} else if (zoomMode === "3x") {
-			computedW = Math.min(Math.round(r.width * 3), maxWidthCap);
+			computedW = isLightbox ? Math.round(r.width * 3) : Math.min(Math.round(r.width * 3), maxWidthCap);
 		} else {
-			// "fill-width" default: caps width at Math.min(stageWidth, 1000)
-			computedW = maxWidthCap;
+			// "fill-width" default: fills stage width (or at least capped container on detail)
+			computedW = isLightbox ? sw : maxWidthCap;
 		}
 
 		// Ensure clicking to zoom never shrinks an already-large image
-		if (computedW <= r.width && maxWidthCap > r.width) {
-			computedW = maxWidthCap;
+		const effectiveMax = isLightbox ? sw : maxWidthCap;
+		if (computedW <= r.width && effectiveMax > r.width) {
+			computedW = effectiveMax;
 		}
 		if (computedW < r.width) {
 			computedW = r.width;
@@ -953,7 +952,8 @@ function createZoomableMediaViewer(options) {
 			const r = getRenderedMediaRect(stage, activeImg, postW, postH);
 			const sw = stage.clientWidth;
 			const ar = postW / postH;
-			const maxWidthCap = Math.min(sw, 1000);
+			const isLightbox = stage.id === "lightbox-stage" || stage.classList.contains("lightbox-stage");
+			const maxWidthCap = isLightbox ? Math.max(sw * 3, postW * 3) : Math.min(sw, 1000);
 
 			const baseW = isZoomed && targetW > 0 ? (targetW / currentZoomScale) : r.width;
 			let newScale = (isZoomed ? currentZoomScale : 1) + delta;

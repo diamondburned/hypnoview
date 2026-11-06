@@ -19,22 +19,11 @@ import (
 	"github.com/huandu/go-sqlbuilder"
 	"libdb.so/lazymigrate"
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 //go:embed schema.sql
 var schemaSQL string
-
-const initPragma = `
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
-PRAGMA cache_size = -64000;
-PRAGMA temp_store = MEMORY;
-PRAGMA mmap_size = 268435456;
-`
-
-var errIntegrityCheckFailed = errors.New("sqlite integrity check failed")
 
 // isCorruptError returns true only when the error represents a genuine unrecoverable
 // corruption of the SQLite database disk image, not transient lock or context errors.
@@ -42,23 +31,14 @@ func isCorruptError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, errIntegrityCheckFailed) {
-		return true
-	}
-	var sqliteErr *sqlite.Error
-	if errors.As(err, &sqliteErr) {
-		code := sqliteErr.Code()
-		// SQLITE_CORRUPT (11) or SQLITE_NOTADB (26)
-		if code == 11 || code == 26 || (code&0xff) == 11 || (code&0xff) == 26 {
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		switch se.Code() & 0xff {
+		case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
 			return true
 		}
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "file is not a database") ||
-		strings.Contains(msg, "database disk image is malformed") ||
-		strings.Contains(msg, "file is encrypted or is not a database") ||
-		strings.Contains(msg, "sqlite integrity check failed") ||
-		strings.Contains(msg, "corrupt")
+	return false
 }
 
 var (
@@ -85,20 +65,20 @@ const (
 
 // Duration returns the duration corresponding to the window, or 0 for all-time.
 func (w Window) Duration() (time.Duration, error) {
-	switch w {
-	case Window6Hours, "rising":
+	switch w.Normalize() {
+	case Window6Hours:
 		return 6 * time.Hour, nil
-	case WindowDay, "day", "daily", "1d", "":
+	case WindowDay:
 		return 24 * time.Hour, nil
 	case Window3Days:
 		return 3 * 24 * time.Hour, nil
-	case WindowWeek, "week", "weekly", "1w":
+	case WindowWeek:
 		return 7 * 24 * time.Hour, nil
-	case Window2Weeks, "2w":
+	case Window2Weeks:
 		return 14 * 24 * time.Hour, nil
-	case WindowMonth, "month", "monthly", "1m":
+	case WindowMonth:
 		return 30 * 24 * time.Hour, nil
-	case WindowAllTime, "alltime":
+	case WindowAllTime:
 		return 0, nil
 	default:
 		return 0, fmt.Errorf("%w: %q", ErrInvalidWindow, w)
@@ -236,6 +216,7 @@ func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
 		"_pragma=foreign_keys(ON)",
 		"_pragma=cache_size(-64000)",
 		"_pragma=temp_store(MEMORY)",
+		"_pragma=mmap_size(268435456)",
 	)
 	if !isMem {
 		pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
@@ -257,54 +238,15 @@ func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
 		db.SetMaxOpenConns(4)
 	}
 
-	execPragmas := initPragma
-	if isMem {
-		execPragmas = `
-PRAGMA foreign_keys = ON;
-PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
-PRAGMA cache_size = -64000;
-PRAGMA temp_store = MEMORY;
-`
-	}
-
-	if _, err := db.ExecContext(ctx, execPragmas); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("executing sqlite pragmas: %w", err)
-	}
-
 	if err := lazymigrate.Migrate(ctx, db, schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrating sqlite schema: %w", err)
 	}
 
-	var schemaVer int
-	if err := db.QueryRowContext(ctx, "PRAGMA schema_version;").Scan(&schemaVer); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("reading schema version: %w", err)
-	}
-
 	var schemaCount int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema;").Scan(&schemaCount); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("reading sqlite_schema: %w", err)
-	}
-
-	var checkResult string
-	if err := db.QueryRowContext(ctx, "PRAGMA quick_check(1);").Scan(&checkResult); err != nil || checkResult != "ok" {
-		_ = db.Close()
-		if err == nil {
-			err = fmt.Errorf("%w: %s", errIntegrityCheckFailed, checkResult)
-		} else {
-			err = fmt.Errorf("%w: %v", errIntegrityCheckFailed, err)
-		}
-		return nil, err
-	}
-
-	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM posts;").Scan(&count); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("verifying posts table: %w", err)
+		return nil, fmt.Errorf("reading sqlite schema: %w", err)
 	}
 
 	return &Store{
@@ -321,11 +263,6 @@ func (s *Store) Close() error {
 // DB returns the underlying *sql.DB for advanced inspection or testing.
 func (s *Store) DB() *sql.DB {
 	return s.db
-}
-
-// Queries returns the sqlc-generated query interface.
-func (s *Store) Queries() *sqlcgen.Queries {
-	return s.q
 }
 
 // PruneOldSnapshots prunes score snapshots older than the specified cutoff timestamp.
@@ -405,6 +342,11 @@ type Stats struct {
 	Seeded           bool      `json:"seeded"`
 }
 
+type prevPostState struct {
+	parentID hypnohub.PostID
+	groupID  hypnohub.PostID
+}
+
 // IngestBatch upserts a batch of posts and records their score snapshots for pollTime.
 // It also records the poll run metadata in poll_runs.
 func (s *Store) IngestBatch(
@@ -427,12 +369,12 @@ func (s *Store) IngestBatch(
 	pollUnix := pollTime.UTC().Unix()
 	tagIDCache := make(map[string]int64, 1024)
 	affectedTagIDs := make(map[int64]struct{}, 1024)
-	affectedGroupIDs := make(map[int64]struct{}, 128)
+	affectedGroupIDs := make(map[hypnohub.PostID]struct{}, 128)
 	upserted := 0
 
 	// Pre-query previous parent_id and group_id for all incoming posts so we detect
 	// parent detachment or status changes and recompute both old and new groups.
-	prevPostMap := make(map[int64]struct{ parentID, groupID int64 }, len(posts))
+	prevPostMap := make(map[hypnohub.PostID]prevPostState, len(posts))
 	var batchIDs []int64
 	for _, p := range posts {
 		if p.ID.IsValid() {
@@ -448,15 +390,25 @@ func (s *Store) IngestBatch(
 			Where(sb.In("id", sqlbuilder.Flatten(chunk)...))
 		q, args := sb.Build()
 		rows, err := tx.QueryContext(ctx, q, args...)
-		if err == nil {
-			for rows.Next() {
-				var id, pid, gid int64
-				if err := rows.Scan(&id, &pid, &gid); err == nil {
-					prevPostMap[id] = struct{ parentID, groupID int64 }{parentID: pid, groupID: gid}
-				}
-			}
-			rows.Close()
+		if err != nil {
+			return 0, fmt.Errorf("querying previous post state: %w", err)
 		}
+		for rows.Next() {
+			var id, pid, gid int64
+			if err := rows.Scan(&id, &pid, &gid); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("scanning previous post state: %w", err)
+			}
+			prevPostMap[hypnohub.PostID(id)] = prevPostState{
+				parentID: hypnohub.PostID(pid),
+				groupID:  hypnohub.PostID(gid),
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("iterating previous post state: %w", err)
+		}
+		rows.Close()
 	}
 
 	for _, p := range posts {
@@ -464,11 +416,11 @@ func (s *Store) IngestBatch(
 			continue
 		}
 
-		prev := prevPostMap[int64(p.ID)]
-		if p.ParentID > 0 || p.HasChildren || prev.parentID > 0 || prev.groupID > 0 {
-			affectedGroupIDs[int64(p.ID)] = struct{}{}
+		prev, existed := prevPostMap[p.ID]
+		if !existed || p.ParentID > 0 || p.HasChildren || prev.parentID > 0 || prev.groupID > 0 {
+			affectedGroupIDs[p.ID] = struct{}{}
 			if p.ParentID > 0 {
-				affectedGroupIDs[int64(p.ParentID)] = struct{}{}
+				affectedGroupIDs[p.ParentID] = struct{}{}
 			}
 			if prev.parentID > 0 {
 				affectedGroupIDs[prev.parentID] = struct{}{}
@@ -579,7 +531,7 @@ func (s *Store) IngestBatch(
 	}
 
 	if len(affectedGroupIDs) > 0 {
-		seedIDs := make([]int64, 0, len(affectedGroupIDs))
+		seedIDs := make([]hypnohub.PostID, 0, len(affectedGroupIDs))
 		for id := range affectedGroupIDs {
 			seedIDs = append(seedIDs, id)
 		}
@@ -607,13 +559,13 @@ func (s *Store) IngestBatch(
 	return upserted, nil
 }
 
-func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error {
+func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.PostID) error {
 	if len(seedIDs) == 0 {
 		return nil
 	}
 
-	frontier := make([]int64, 0, len(seedIDs))
-	seen := make(map[int64]bool, len(seedIDs)*2)
+	frontier := make([]hypnohub.PostID, 0, len(seedIDs))
+	seen := make(map[hypnohub.PostID]bool, len(seedIDs)*2)
 	for _, id := range seedIDs {
 		if id > 0 && !seen[id] {
 			seen[id] = true
@@ -622,13 +574,13 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 	}
 
 	type postNode struct {
-		id       int64
-		parentID int64
-		groupID  int64
+		id       hypnohub.PostID
+		parentID hypnohub.PostID
+		groupID  hypnohub.PostID
 		status   string
 	}
 
-	allNodes := make(map[int64]postNode)
+	allNodes := make(map[hypnohub.PostID]postNode)
 
 	for len(frontier) > 0 {
 		batch := frontier
@@ -637,9 +589,12 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 		for i := 0; i < len(batch); i += 500 {
 			end := min(len(batch), i+500)
 			chunk := batch[i:end]
+			flatChunk := make([]any, len(chunk))
+			for j, id := range chunk {
+				flatChunk[j] = int64(id)
+			}
 
 			sb := sqlbuilder.SQLite.NewSelectBuilder()
-			flatChunk := sqlbuilder.Flatten(chunk)
 			sb.Select("id", "parent_id", "group_id", "status").
 				From("posts").
 				Where(
@@ -660,10 +615,17 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 			}
 
 			for rows.Next() {
-				var n postNode
-				if err := rows.Scan(&n.id, &n.parentID, &n.groupID, &n.status); err != nil {
+				var id, pid, gid int64
+				var status string
+				if err := rows.Scan(&id, &pid, &gid, &status); err != nil {
 					rows.Close()
 					return fmt.Errorf("scanning post for group recompute: %w", err)
+				}
+				n := postNode{
+					id:       hypnohub.PostID(id),
+					parentID: hypnohub.PostID(pid),
+					groupID:  hypnohub.PostID(gid),
+					status:   status,
 				}
 				allNodes[n.id] = n
 
@@ -688,7 +650,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 	}
 
 	// Build undirected adjacency graph. Active posts link to parent_id if parent is active or unindexed.
-	adj := make(map[int64][]int64, len(allNodes))
+	adj := make(map[hypnohub.PostID][]hypnohub.PostID, len(allNodes))
 	for id, n := range allNodes {
 		if n.status == "active" && n.parentID > 0 && n.parentID != id {
 			parent, inNodes := allNodes[n.parentID]
@@ -708,7 +670,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 				GroupID:        0,
 				GroupPageCount: 1,
 				GroupIsLatest:  0,
-				ID:             id,
+				ID:             int64(id),
 			}); err != nil {
 				return fmt.Errorf("resetting inactive post group %d: %w", id, err)
 			}
@@ -716,15 +678,15 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 	}
 
 	// Find connected components among active posts using BFS
-	visitedComp := make(map[int64]bool, len(allNodes))
+	visitedComp := make(map[hypnohub.PostID]bool, len(allNodes))
 
 	for id, n := range allNodes {
 		if n.status != "active" || visitedComp[id] {
 			continue
 		}
 
-		var comp []int64
-		queue := []int64{id}
+		var comp []hypnohub.PostID
+		queue := []hypnohub.PostID{id}
 		visitedComp[id] = true
 
 		for len(queue) > 0 {
@@ -741,7 +703,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 		}
 
 		// Filter connected component to active posts that exist in allNodes
-		var activeComp []int64
+		var activeComp []hypnohub.PostID
 		for _, pid := range comp {
 			if node, ok := allNodes[pid]; ok && node.status == "active" {
 				activeComp = append(activeComp, pid)
@@ -755,7 +717,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 					GroupID:        0,
 					GroupPageCount: 1,
 					GroupIsLatest:  1,
-					ID:             pid,
+					ID:             int64(pid),
 				}); err != nil {
 					return fmt.Errorf("resetting single post group %d: %w", pid, err)
 				}
@@ -773,10 +735,10 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 				isLatest = 1
 			}
 			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
-				GroupID:        groupID,
+				GroupID:        int64(groupID),
 				GroupPageCount: pageCount,
 				GroupIsLatest:  isLatest,
-				ID:             pid,
+				ID:             int64(pid),
 			}); err != nil {
 				return fmt.Errorf("updating post group %d: %w", pid, err)
 			}
@@ -786,6 +748,39 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 	return nil
 }
 
+// MediaType filters posts by media category.
+type MediaType string
+
+const (
+	MediaAll      MediaType = ""
+	MediaImage    MediaType = "image"
+	MediaAnimated MediaType = "animated"
+	MediaVideo    MediaType = "video"
+)
+
+// NormalizeMediaType maps user strings to canonical MediaType values.
+func NormalizeMediaType(m string) MediaType {
+	switch strings.ToLower(strings.TrimSpace(m)) {
+	case "video":
+		return MediaVideo
+	case "animated":
+		return MediaAnimated
+	case "image", "static":
+		return MediaImage
+	default:
+		return MediaAll
+	}
+}
+
+// PostStatus represents the moderation/lifecycle status of a post.
+type PostStatus string
+
+const (
+	StatusActive  PostStatus = "active"
+	StatusDeleted PostStatus = "deleted"
+	StatusFlagged PostStatus = "flagged"
+)
+
 // QueryOptions configures a query against the local post index.
 type QueryOptions struct {
 	Window         Window
@@ -793,8 +788,8 @@ type QueryOptions struct {
 	Rating         hypnohub.Rating // optional: "s", "q", "e", or "" for all
 	IncludeTags    []string
 	ExcludeTags    []string
-	MediaType      string // optional: "image", "video", "animated", or ""
-	CollapseGroups bool   // collapse multi-page sibling/pool groups into the latest post
+	MediaType      MediaType // optional: "image", "video", "animated", or ""
+	CollapseGroups bool      // collapse multi-page sibling/pool groups into the latest post
 	Limit          int
 	Offset         int
 	Now            time.Time // defaults to latest poll time (or time.Now() if empty)
@@ -810,6 +805,8 @@ type QueryResult struct {
 	WindowEnd   time.Time     `json:"window_end"`
 }
 
+const hotScoreMomentumExp = 0.35
+
 var basePostColumns = []string{
 	"p.id", "p.created_at", "p.changed_at", "p.score", "p.rating", "p.creator_id", "p.parent_id",
 	"p.md5", "p.source", "p.status", "p.has_notes", "p.has_comments", "p.has_children",
@@ -820,100 +817,108 @@ var basePostColumns = []string{
 	"p.group_id", "p.group_is_latest", "p.group_page_count",
 }
 
-func applyPostFilters(sb *sqlbuilder.SelectBuilder, opts QueryOptions, ratingStr, mediaTypeStr string, includeTags, excludeTags []string, winDur time.Duration, windowStartUnix int64, hasFilters bool) {
-	sb.Where(sb.Equal("p.status", "active"))
-	if opts.CollapseGroups && !hasFilters {
-		sb.Where(sb.Equal("p.group_is_latest", 1))
-	}
-	if winDur > 0 {
-		sb.Where(sb.Or(
-			sb.GreaterEqualThan("p.created_at", windowStartUnix),
-			sb.And(
-				sb.IsNotNull("b.start_score"),
-				"p.score > b.start_score",
-			),
-		))
-	}
-	if ratingStr != "" {
-		sb.Where(sb.Equal("p.rating", ratingStr))
-	}
-	switch mediaTypeStr {
-	case "video":
-		sb.Where(sb.In("p.file_ext", "mp4", "webm"))
-	case "animated":
-		sb.Where(sb.In("p.file_ext", "mp4", "webm", "gif"))
-	case "image":
-		sb.Where(sb.NotIn("p.file_ext", "mp4", "webm", "gif"))
-	}
-	for _, tag := range includeTags {
-		sub := sqlbuilder.SQLite.NewSelectBuilder()
-		sub.Select("pt.post_id").
-			From("post_tags pt").
-			Join("tags t", "t.id = pt.tag_id").
-			Where(sub.Equal("t.name", tag))
-		sb.Where(sb.In("p.id", sub))
-	}
-	for _, tag := range excludeTags {
-		sub := sqlbuilder.SQLite.NewSelectBuilder()
-		sub.Select("pt.post_id").
-			From("post_tags pt").
-			Join("tags t", "t.id = pt.tag_id").
-			Where(sub.Equal("t.name", tag))
-		sb.Where(sb.NotIn("p.id", sub))
-	}
-}
-
-func allTimePostColumns(sb *sqlbuilder.SelectBuilder, nowUnix int64, tau float64) []string {
+func selectPostColumns(sb *sqlbuilder.SelectBuilder, windowStart, now time.Time, tau float64) []string {
 	cols := make([]string, len(basePostColumns), len(basePostColumns)+5)
 	copy(cols, basePostColumns)
 
-	nowVar1 := sb.Var(nowUnix)
-	nowVar2 := sb.Var(nowUnix)
-	nowVar3 := sb.Var(nowUnix)
-	tauVar1 := sb.Var(tau)
-	tauVar2 := sb.Var(tau)
+	nowVar := sb.Var(now.Unix())
+	tauVar := sb.Var(tau)
 
-	cols = append(cols,
-		"0 AS baseline_score",
-		"p.score AS score_delta",
-		fmt.Sprintf("MAX(0.1, (%s - p.created_at) / 3600.0) AS window_hours", nowVar1),
-		fmt.Sprintf("CAST(p.score AS REAL) / (MAX(0.1, (%s - p.created_at) / 3600.0) + %s) AS score_rate", nowVar2, tauVar1),
-		fmt.Sprintf("(CAST(p.score AS REAL) / (MAX(0.1, (%s - p.created_at) / 3600.0) + %s)) * POWER(MAX(1, p.score), 0.35) AS hot_score", nowVar3, tauVar2),
-	)
-	return cols
-}
+	if windowStart.IsZero() {
+		effHours := fmt.Sprintf("MAX(0.1, (%s - p.created_at) / 3600.0)", nowVar)
+		scoreRate := fmt.Sprintf("CAST(p.score AS REAL) / (%s + %s)", effHours, tauVar)
+		hotScore := fmt.Sprintf("(%s) * POWER(MAX(1, p.score), %f)", scoreRate, hotScoreMomentumExp)
 
-func windowedPostColumns(sb *sqlbuilder.SelectBuilder, windowStartUnix, nowUnix int64, tau float64) []string {
-	cols := make([]string, len(basePostColumns), len(basePostColumns)+5)
-	copy(cols, basePostColumns)
+		cols = append(cols,
+			"0 AS baseline_score",
+			"p.score AS score_delta",
+			effHours+" AS window_hours",
+			scoreRate+" AS score_rate",
+			hotScore+" AS hot_score",
+		)
+		return cols
+	}
 
-	bExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN 0 ELSE COALESCE(b.start_score, p.score) END", sb.Var(windowStartUnix))
-	dExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END", sb.Var(windowStartUnix))
-	effExpr := fmt.Sprintf("MAX(0.1, (%s - CASE WHEN p.created_at >= %s THEN p.created_at ELSE COALESCE(b.start_time, %s) END) / 3600.0)",
-		sb.Var(nowUnix), sb.Var(windowStartUnix), sb.Var(windowStartUnix))
-	rateExpr := fmt.Sprintf("CAST(%s AS REAL) / (%s + %s)", dExpr, effExpr, sb.Var(tau))
-	hotExpr := fmt.Sprintf("(CAST(%s AS REAL) / (%s + %s)) * POWER(MAX(1, p.score), 0.35)", dExpr, effExpr, sb.Var(tau))
+	startVar := sb.Var(windowStart.Unix())
+	bExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN 0 ELSE COALESCE(b.start_score, p.score) END", startVar)
+	dExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END", startVar)
+	effHours := fmt.Sprintf("MAX(0.1, (%s - CASE WHEN p.created_at >= %s THEN p.created_at ELSE COALESCE(b.start_time, %s) END) / 3600.0)", nowVar, startVar, startVar)
+	scoreRate := fmt.Sprintf("CAST(%s AS REAL) / (%s + %s)", dExpr, effHours, tauVar)
+	hotScore := fmt.Sprintf("(%s) * POWER(MAX(1, p.score), %f)", scoreRate, hotScoreMomentumExp)
 
 	cols = append(cols,
 		bExpr+" AS baseline_score",
 		dExpr+" AS score_delta",
-		effExpr+" AS window_hours",
-		rateExpr+" AS score_rate",
-		hotExpr+" AS hot_score",
+		effHours+" AS window_hours",
+		scoreRate+" AS score_rate",
+		hotScore+" AS hot_score",
 	)
 	return cols
 }
 
-func newBaselineCTE(windowStartUnix, nowUnix int64) *sqlbuilder.CTEQueryBuilder {
+func newBaselineCTE(windowStart, now time.Time) *sqlbuilder.CTEQueryBuilder {
 	baseSB := sqlbuilder.SQLite.NewSelectBuilder()
 	baseSB.Select("post_id", "score AS start_score", "MIN(poll_time) AS start_time").
 		From("score_snapshots").
 		Where(
-			baseSB.GreaterEqualThan("poll_time", windowStartUnix),
-			baseSB.LessThan("poll_time", nowUnix),
+			baseSB.GreaterEqualThan("poll_time", windowStart.Unix()),
+			baseSB.LessThan("poll_time", now.Unix()),
 		).
 		GroupBy("post_id")
 	return sqlbuilder.SQLite.NewCTEQueryBuilder().Table("baseline").As(baseSB)
+}
+
+type postFilter struct {
+	rating         hypnohub.Rating
+	media          MediaType
+	include        []string
+	exclude        []string
+	windowStart    time.Time
+	collapseGroups bool
+}
+
+func (f postFilter) hasAny() bool {
+	return f.rating != "" || f.media != "" || len(f.include) > 0 || len(f.exclude) > 0 || !f.windowStart.IsZero()
+}
+
+func (f postFilter) applyBase(sb *sqlbuilder.SelectBuilder, postAlias, baselineAlias string) {
+	sb.Where(sb.Equal(postAlias+".status", string(StatusActive)))
+	if !f.windowStart.IsZero() {
+		sb.Where(sb.Or(
+			sb.GreaterEqualThan(postAlias+".created_at", f.windowStart.Unix()),
+			sb.And(
+				sb.IsNotNull(baselineAlias+".start_score"),
+				fmt.Sprintf("%s.score > %s.start_score", postAlias, baselineAlias),
+			),
+		))
+	}
+	if f.rating != "" {
+		sb.Where(sb.Equal(postAlias+".rating", string(f.rating)))
+	}
+	switch f.media {
+	case MediaVideo:
+		sb.Where(sb.In(postAlias+".file_ext", "mp4", "webm"))
+	case MediaAnimated:
+		sb.Where(sb.In(postAlias+".file_ext", "mp4", "webm", "gif"))
+	case MediaImage:
+		sb.Where(sb.NotIn(postAlias+".file_ext", "mp4", "webm", "gif"))
+	}
+	for _, tag := range f.include {
+		sub := sqlbuilder.SQLite.NewSelectBuilder()
+		sub.Select("pt.post_id").
+			From("post_tags pt").
+			Join("tags t", "t.id = pt.tag_id").
+			Where(sub.Equal("t.name", tag))
+		sb.Where(sb.In(postAlias+".id", sub))
+	}
+	for _, tag := range f.exclude {
+		sub := sqlbuilder.SQLite.NewSelectBuilder()
+		sub.Select("pt.post_id").
+			From("post_tags pt").
+			Join("tags t", "t.id = pt.tag_id").
+			Where(sub.Equal("t.name", tag))
+		sb.Where(sb.NotIn(postAlias+".id", sub))
+	}
 }
 
 // QueryPosts queries the local SQLite index for posts matching the given window,
@@ -944,239 +949,80 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		refNow = s.latestReferenceTime(ctx)
 	}
 	refNow = refNow.UTC()
-	nowUnix := refNow.Unix()
 
-	var windowStartUnix int64
+	var windowStart time.Time
 	if winDur > 0 {
-		windowStartUnix = refNow.Add(-winDur).Unix()
+		windowStart = refNow.Add(-winDur)
 	}
 
 	tau := window.DampingHours()
 
-	ratingStr := ""
+	var rating hypnohub.Rating
 	if opts.Rating != "" {
 		r := opts.Rating.Normalize()
 		if r == hypnohub.RatingSafe || r == hypnohub.RatingQuestionable || r == hypnohub.RatingExplicit {
-			ratingStr = string(r)
+			rating = r
 		}
 	}
 
-	mediaTypeStr := ""
-	switch strings.ToLower(strings.TrimSpace(opts.MediaType)) {
-	case "video":
-		mediaTypeStr = "video"
-	case "animated":
-		mediaTypeStr = "animated"
-	case "image", "static":
-		mediaTypeStr = "image"
+	filter := postFilter{
+		rating:         rating,
+		media:          NormalizeMediaType(string(opts.MediaType)),
+		include:        cleanTagList(opts.IncludeTags),
+		exclude:        cleanTagList(opts.ExcludeTags),
+		windowStart:    windowStart,
+		collapseGroups: opts.CollapseGroups,
 	}
 
-	includeTags := cleanTagList(opts.IncludeTags)
-	excludeTags := cleanTagList(opts.ExcludeTags)
-	hasFilters := len(includeTags) > 0 || len(excludeTags) > 0 || ratingStr != ""
+	// 1. Compute total count
+	countSB := sqlbuilder.SQLite.NewSelectBuilder()
+	if !filter.windowStart.IsZero() {
+		countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(filter.windowStart, refNow)))
+	}
+	if filter.collapseGroups && filter.hasAny() {
+		countSB.Select("COUNT(DISTINCT CASE WHEN p.group_id > 0 THEN p.group_id ELSE p.id END)").From("posts p")
+	} else {
+		countSB.Select("COUNT(*)").From("posts p")
+	}
+	if !filter.windowStart.IsZero() {
+		countSB.JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+	}
+	if filter.collapseGroups && !filter.hasAny() {
+		countSB.Where(countSB.Equal("p.group_is_latest", 1))
+	}
+	filter.applyBase(countSB, "p", "b")
 
-	// Fast path: When no tag filters are requested and not filtering by rating while collapsing groups,
-	// execute 100% type-safe sqlc queries without any dynamic string concatenation or overhead.
-	if len(includeTags) == 0 && len(excludeTags) == 0 && (!opts.CollapseGroups || ratingStr == "") {
-		if winDur == 0 {
-			// All-time window: No score_snapshots join required!
-			total, err := s.q.CountPostsAll(ctx, sqlcgen.CountPostsAllParams{
-				CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
-				Rating:         ratingStr,
-				MediaType:      mediaTypeStr,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("counting posts: %w", err)
-			}
-
-			var posts []IndexedPost
-			switch sortMode {
-			case SortNew:
-				rows, err := s.q.ListPostsAllSortNew(ctx, sqlcgen.ListPostsAllSortNewParams{
-					NowUnix:        nowUnix,
-					Tau:            tau,
-					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
-					Rating:         ratingStr,
-					MediaType:      mediaTypeStr,
-					Limit:          int64(limit),
-					Offset:         int64(offset),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("querying posts all (sort new): %w", err)
-				}
-				posts = make([]IndexedPost, len(rows))
-				for i, r := range rows {
-					posts[i] = rowToIndexedPostAllSortNew(r)
-				}
-			case SortScore:
-				rows, err := s.q.ListPostsAllSortScore(ctx, sqlcgen.ListPostsAllSortScoreParams{
-					NowUnix:        nowUnix,
-					Tau:            tau,
-					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
-					Rating:         ratingStr,
-					MediaType:      mediaTypeStr,
-					Limit:          int64(limit),
-					Offset:         int64(offset),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("querying posts all (sort score): %w", err)
-				}
-				posts = make([]IndexedPost, len(rows))
-				for i, r := range rows {
-					posts[i] = rowToIndexedPostAllSortScore(r)
-				}
-			case SortHot:
-				rows, err := s.q.ListPostsAllSortHot(ctx, sqlcgen.ListPostsAllSortHotParams{
-					NowUnix:        nowUnix,
-					Tau:            tau,
-					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
-					Rating:         ratingStr,
-					MediaType:      mediaTypeStr,
-					Limit:          int64(limit),
-					Offset:         int64(offset),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("querying posts all (sort hot): %w", err)
-				}
-				posts = make([]IndexedPost, len(rows))
-				for i, r := range rows {
-					posts[i] = rowToIndexedPostAllSortHot(r)
-				}
-			case SortTop:
-				rows, err := s.q.ListPostsAllSortTop(ctx, sqlcgen.ListPostsAllSortTopParams{
-					NowUnix:        nowUnix,
-					Tau:            tau,
-					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
-					Rating:         ratingStr,
-					MediaType:      mediaTypeStr,
-					Limit:          int64(limit),
-					Offset:         int64(offset),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("querying posts all (sort top): %w", err)
-				}
-				posts = make([]IndexedPost, len(rows))
-				for i, r := range rows {
-					posts[i] = rowToIndexedPostAllSortTop(r)
-				}
-			}
-
-			winStart := time.Unix(windowStartUnix, 0).UTC()
-			if len(posts) > 0 {
-				winStart = posts[len(posts)-1].CreatedAt
-			}
-
-			return &QueryResult{
-				Posts:       posts,
-				Total:       int(total),
-				Window:      window,
-				Sort:        sortMode,
-				WindowStart: winStart,
-				WindowEnd:   refNow,
-			}, nil
-		}
-
-		// Windowed fast-path (6h, 24h, 3d, 7d, 14d, 30d):
-		total, err := s.q.CountPostsWindowed(ctx, sqlcgen.CountPostsWindowedParams{
-			WindowStartUnix: windowStartUnix,
-			NowUnix:         nowUnix,
-			CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
-			Rating:          ratingStr,
-			MediaType:       mediaTypeStr,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("counting windowed posts: %w", err)
-		}
-
-		var posts []IndexedPost
-		switch sortMode {
-		case SortHot:
-			rows, err := s.q.ListPostsWindowedSortHot(ctx, sqlcgen.ListPostsWindowedSortHotParams{
-				WindowStartUnix: windowStartUnix,
-				NowUnix:         nowUnix,
-				Tau:             tau,
-				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
-				Rating:          ratingStr,
-				MediaType:       mediaTypeStr,
-				Limit:           int64(limit),
-				Offset:          int64(offset),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("querying windowed posts (sort hot): %w", err)
-			}
-			posts = make([]IndexedPost, len(rows))
-			for i, r := range rows {
-				posts[i] = rowToIndexedPostWindowedSortHot(r)
-			}
-		case SortTop:
-			rows, err := s.q.ListPostsWindowedSortTop(ctx, sqlcgen.ListPostsWindowedSortTopParams{
-				WindowStartUnix: windowStartUnix,
-				NowUnix:         nowUnix,
-				Tau:             tau,
-				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
-				Rating:          ratingStr,
-				MediaType:       mediaTypeStr,
-				Limit:           int64(limit),
-				Offset:          int64(offset),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("querying windowed posts (sort top): %w", err)
-			}
-			posts = make([]IndexedPost, len(rows))
-			for i, r := range rows {
-				posts[i] = rowToIndexedPostWindowedSortTop(r)
-			}
-		case SortNew:
-			rows, err := s.q.ListPostsWindowedSortNew(ctx, sqlcgen.ListPostsWindowedSortNewParams{
-				WindowStartUnix: windowStartUnix,
-				NowUnix:         nowUnix,
-				Tau:             tau,
-				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
-				Rating:          ratingStr,
-				MediaType:       mediaTypeStr,
-				Limit:           int64(limit),
-				Offset:          int64(offset),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("querying windowed posts (sort new): %w", err)
-			}
-			posts = make([]IndexedPost, len(rows))
-			for i, r := range rows {
-				posts[i] = rowToIndexedPostWindowedSortNew(r)
-			}
-		case SortScore:
-			rows, err := s.q.ListPostsWindowedSortScore(ctx, sqlcgen.ListPostsWindowedSortScoreParams{
-				WindowStartUnix: windowStartUnix,
-				NowUnix:         nowUnix,
-				Tau:             tau,
-				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
-				Rating:          ratingStr,
-				MediaType:       mediaTypeStr,
-				Limit:           int64(limit),
-				Offset:          int64(offset),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("querying windowed posts (sort score): %w", err)
-			}
-			posts = make([]IndexedPost, len(rows))
-			for i, r := range rows {
-				posts[i] = rowToIndexedPostWindowedSortScore(r)
-			}
-		}
-
-		winStart := time.Unix(windowStartUnix, 0).UTC()
-		return &QueryResult{
-			Posts:       posts,
-			Total:       int(total),
-			Window:      window,
-			Sort:        sortMode,
-			WindowStart: winStart,
-			WindowEnd:   refNow,
-		}, nil
+	countSQL, countArgs := countSB.Build()
+	var total int
+	if err := s.db.QueryRowContext(ctx, countSQL, countArgs...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("counting posts: %w", err)
 	}
 
-	// Dynamic path: Required when includeTags or excludeTags are present, or when collapsing groups with rating/tags.
-	dynamicCollapse := opts.CollapseGroups && hasFilters
+	// 2. Select page of posts
+	querySB := sqlbuilder.SQLite.NewSelectBuilder()
+	if !filter.windowStart.IsZero() {
+		querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(filter.windowStart, refNow)))
+	}
+	querySB.Select(selectPostColumns(querySB, filter.windowStart, refNow, tau)...).From("posts p")
+	if !filter.windowStart.IsZero() {
+		querySB.JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+	}
+
+	if filter.collapseGroups {
+		if !filter.hasAny() {
+			querySB.Where(querySB.Equal("p.group_is_latest", 1))
+		} else {
+			sub := sqlbuilder.SQLite.NewSelectBuilder()
+			sub.Select("MAX(sub_p.id)").From("posts sub_p")
+			if !filter.windowStart.IsZero() {
+				sub.JoinWithOption(sqlbuilder.LeftJoin, "baseline b_sub", "b_sub.post_id = sub_p.id")
+			}
+			filter.applyBase(sub, "sub_p", "b_sub")
+			sub.GroupBy("CASE WHEN sub_p.group_id > 0 THEN sub_p.group_id ELSE sub_p.id END")
+			querySB.Where(querySB.In("p.id", sub))
+		}
+	}
+	filter.applyBase(querySB, "p", "b")
 
 	var orderCols []string
 	switch sortMode {
@@ -1189,161 +1035,12 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 	case SortScore:
 		orderCols = []string{"p.score DESC", "p.id DESC"}
 	}
+	querySB.OrderBy(orderCols...).Limit(limit).Offset(offset)
 
-	if winDur == 0 {
-		// All-time window with tag filters: Fast path avoiding score_snapshots join!
-		var total int
-		var countQuery string
-		var countArgs []any
-		var querySQL string
-		var queryArgs []any
-
-		if dynamicCollapse {
-			matchedSB := sqlbuilder.SQLite.NewSelectBuilder()
-			matchedSB.Select("p.id", "p.group_id").From("posts p")
-			applyPostFilters(matchedSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-			matchedCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedSB)
-
-			inner := sqlbuilder.SQLite.NewSelectBuilder()
-			inner.Select("1").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
-
-			countSB := sqlbuilder.SQLite.NewSelectBuilder()
-			countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(matchedCTE))
-			countSB.Select("COUNT(*)").From(countSB.BuilderAs(inner, "sub"))
-			countQuery, countArgs = countSB.Build()
-
-			matchedQuerySB := sqlbuilder.SQLite.NewSelectBuilder()
-			matchedQuerySB.Select(allTimePostColumns(matchedQuerySB, nowUnix, tau)...).From("posts p")
-			applyPostFilters(matchedQuerySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-			matchedQueryCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedQuerySB)
-
-			maxSub := sqlbuilder.SQLite.NewSelectBuilder()
-			maxSub.Select("MAX(id)").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
-
-			querySB := sqlbuilder.SQLite.NewSelectBuilder()
-			querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(matchedQueryCTE))
-			querySB.Select("*").From("matched p").
-				Where(querySB.In("p.id", maxSub)).
-				OrderBy(orderCols...).
-				Limit(limit).
-				Offset(offset)
-			querySQL, queryArgs = querySB.Build()
-		} else {
-			countSB := sqlbuilder.SQLite.NewSelectBuilder()
-			countSB.Select("COUNT(*)").From("posts p")
-			applyPostFilters(countSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-			countQuery, countArgs = countSB.Build()
-
-			querySB := sqlbuilder.SQLite.NewSelectBuilder()
-			querySB.Select(allTimePostColumns(querySB, nowUnix, tau)...).From("posts p")
-			applyPostFilters(querySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-			querySB.OrderBy(orderCols...).Limit(limit).Offset(offset)
-			querySQL, queryArgs = querySB.Build()
-		}
-
-		if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
-			return nil, fmt.Errorf("counting posts: %w", err)
-		}
-
-		rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
-		if err != nil {
-			return nil, fmt.Errorf("querying posts all dynamic: %w", err)
-		}
-		defer rows.Close()
-
-		posts := make([]IndexedPost, 0, limit)
-		for rows.Next() {
-			post, err := scanIndexedPost(rows)
-			if err != nil {
-				return nil, err
-			}
-			posts = append(posts, post)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterating posts: %w", err)
-		}
-
-		winStart := time.Unix(windowStartUnix, 0).UTC()
-		if len(posts) > 0 {
-			winStart = posts[len(posts)-1].CreatedAt
-		}
-
-		return &QueryResult{
-			Posts:       posts,
-			Total:       total,
-			Window:      window,
-			Sort:        sortMode,
-			WindowStart: winStart,
-			WindowEnd:   refNow,
-		}, nil
-	}
-
-	// Windowed dynamic query with score_snapshots baseline CTE:
-	var total int
-	var countQuery string
-	var countArgs []any
-	var querySQL string
-	var queryArgs []any
-
-	if dynamicCollapse {
-		matchedSB := sqlbuilder.SQLite.NewSelectBuilder()
-		matchedSB.Select("p.id", "p.group_id").
-			From("posts p").
-			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
-		applyPostFilters(matchedSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-		matchedCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedSB)
-
-		inner := sqlbuilder.SQLite.NewSelectBuilder()
-		inner.Select("1").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
-
-		countSB := sqlbuilder.SQLite.NewSelectBuilder()
-		countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix), matchedCTE))
-		countSB.Select("COUNT(*)").From(countSB.BuilderAs(inner, "sub"))
-		countQuery, countArgs = countSB.Build()
-
-		matchedQuerySB := sqlbuilder.SQLite.NewSelectBuilder()
-		matchedQuerySB.Select(windowedPostColumns(matchedQuerySB, windowStartUnix, nowUnix, tau)...).
-			From("posts p").
-			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
-		applyPostFilters(matchedQuerySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-		matchedQueryCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedQuerySB)
-
-		maxSub := sqlbuilder.SQLite.NewSelectBuilder()
-		maxSub.Select("MAX(id)").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
-
-		querySB := sqlbuilder.SQLite.NewSelectBuilder()
-		querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix), matchedQueryCTE))
-		querySB.Select("*").From("matched p").
-			Where(querySB.In("p.id", maxSub)).
-			OrderBy(orderCols...).
-			Limit(limit).
-			Offset(offset)
-		querySQL, queryArgs = querySB.Build()
-	} else {
-		countSB := sqlbuilder.SQLite.NewSelectBuilder()
-		countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix)))
-		countSB.Select("COUNT(*)").From("posts p").
-			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
-		applyPostFilters(countSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-		countQuery, countArgs = countSB.Build()
-
-		querySB := sqlbuilder.SQLite.NewSelectBuilder()
-		querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix)))
-		querySB.Select(windowedPostColumns(querySB, windowStartUnix, nowUnix, tau)...).
-			From("posts p").
-			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
-		applyPostFilters(querySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
-		querySB.OrderBy(orderCols...).Limit(limit).Offset(offset)
-		querySQL, queryArgs = querySB.Build()
-	}
-
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
-		return nil, fmt.Errorf("counting posts: %w", err)
-	}
-
+	querySQL, queryArgs := querySB.Build()
 	rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("querying windowed posts dynamic: %w", err)
+		return nil, fmt.Errorf("querying posts: %w", err)
 	}
 	defer rows.Close()
 
@@ -1359,7 +1056,11 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		return nil, fmt.Errorf("iterating posts: %w", err)
 	}
 
-	winStart := time.Unix(windowStartUnix, 0).UTC()
+	winStart := windowStart
+	if winDur == 0 && len(posts) > 0 {
+		winStart = posts[len(posts)-1].CreatedAt
+	}
+
 	return &QueryResult{
 		Posts:       posts,
 		Total:       total,
@@ -1405,16 +1106,12 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		post.HotScore = math.Round(hotScore*1000) / 1000
 	} else {
 		// Created before 24h window: look up baseline snapshot in window
-		var startScore int64 = -1
-		var startTime int64
-		for _, snap := range snapRows {
-			if snap.PollTime >= windowStartUnix && snap.PollTime < nowUnix {
-				startScore = snap.Score
-				startTime = snap.PollTime
-				break
-			}
-		}
-		if startScore >= 0 {
+		idx := slices.IndexFunc(snapRows, func(snap sqlcgen.GetSnapshotsByPostIDRow) bool {
+			return snap.PollTime >= windowStartUnix && snap.PollTime < nowUnix
+		})
+		if idx >= 0 {
+			startScore := snapRows[idx].Score
+			startTime := snapRows[idx].PollTime
 			delta := max(0, postRow.Score-startScore)
 			effHours := max(0.1, float64(nowUnix-startTime)/3600.0)
 			scoreRate := float64(delta) / (effHours + tau)
@@ -1628,164 +1325,6 @@ func postToIndexed(p sqlcgen.Post, nowUnix int64, tau float64) IndexedPost {
 		ScoreRate:      math.Round(scoreRate*1000) / 1000,
 		HotScore:       math.Round(hotScore*1000) / 1000,
 	}
-}
-
-func newIndexedPost(
-	id, createdAt, changedAt, score int64,
-	rating string,
-	creatorID, parentID int64,
-	md5, source, status string,
-	hasNotes, hasComments, hasChildren int64,
-	fileURL, fileExt string,
-	width, height int64,
-	sampleURL string, sampleWidth, sampleHeight int64,
-	previewURL string, previewWidth, previewHeight int64,
-	tagsRaw string,
-	firstSeenAt, lastPolledAt int64,
-	groupID, groupIsLatest, groupPageCount int64,
-	baselineScore, scoreDelta int64,
-	windowHours, scoreRate, hotScore float64,
-) IndexedPost {
-	return IndexedPost{
-		ID:             hypnohub.PostID(id),
-		CreatedAt:      time.Unix(createdAt, 0).UTC(),
-		ChangedAt:      time.Unix(changedAt, 0).UTC(),
-		Score:          int(score),
-		Rating:         hypnohub.Rating(rating).Normalize(),
-		CreatorID:      int(creatorID),
-		ParentID:       hypnohub.PostID(parentID),
-		MD5:            md5,
-		Source:         source,
-		Status:         status,
-		HasNotes:       hasNotes != 0,
-		HasComments:    hasComments != 0,
-		HasChildren:    hasChildren != 0,
-		FileURL:        fileURL,
-		FileExt:        fileExt,
-		Width:          int(width),
-		Height:         int(height),
-		SampleURL:      sampleURL,
-		SampleWidth:    int(sampleWidth),
-		SampleHeight:   int(sampleHeight),
-		PreviewURL:     previewURL,
-		PreviewWidth:   int(previewWidth),
-		PreviewHeight:  int(previewHeight),
-		Tags:           strings.Fields(tagsRaw),
-		FirstSeenAt:    time.Unix(firstSeenAt, 0).UTC(),
-		LastPolledAt:   time.Unix(lastPolledAt, 0).UTC(),
-		GroupID:        hypnohub.PostID(groupID),
-		GroupIsLatest:  groupIsLatest != 0,
-		GroupPageCount: int(groupPageCount),
-		BaselineScore:  int(baselineScore),
-		ScoreDelta:     int(scoreDelta),
-		WindowHours:    math.Round(windowHours*100) / 100,
-		ScoreRate:      math.Round(scoreRate*1000) / 1000,
-		HotScore:       math.Round(hotScore*1000) / 1000,
-	}
-}
-
-func rowToIndexedPostAllSortNew(r sqlcgen.ListPostsAllSortNewRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostAllSortScore(r sqlcgen.ListPostsAllSortScoreRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostAllSortHot(r sqlcgen.ListPostsAllSortHotRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostAllSortTop(r sqlcgen.ListPostsAllSortTopRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostWindowedSortHot(r sqlcgen.ListPostsWindowedSortHotRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostWindowedSortTop(r sqlcgen.ListPostsWindowedSortTopRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostWindowedSortNew(r sqlcgen.ListPostsWindowedSortNewRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
-}
-
-func rowToIndexedPostWindowedSortScore(r sqlcgen.ListPostsWindowedSortScoreRow) IndexedPost {
-	return newIndexedPost(
-		r.ID, r.CreatedAt, r.ChangedAt, r.Score, r.Rating, r.CreatorID, r.ParentID,
-		r.MD5, r.Source, r.Status, r.HasNotes, r.HasComments, r.HasChildren,
-		r.FileURL, r.FileExt, r.Width, r.Height,
-		r.SampleURL, r.SampleWidth, r.SampleHeight,
-		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
-		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
-		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
-		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
-	)
 }
 
 type rowScanner interface {

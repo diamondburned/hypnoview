@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gaze.d14.pet"
+	"gaze.d14.pet/query"
 )
 
 const (
@@ -181,9 +182,9 @@ func (p *Poller) Seed(ctx context.Context, targetPosts int) (int, error) {
 		return 0, nil
 	}
 
-	var cursorID int64
+	var cursorID hypnohub.PostID
 	if minID, ok := seedStats.MinID.(int64); ok && minID > 0 {
-		cursorID = minID
+		cursorID = hypnohub.PostID(minID)
 		p.cfg.Logger.InfoContext(ctx, "resuming seed backwards from existing oldest post",
 			"existing_posts", existingCount,
 			"target_posts", targetPosts,
@@ -213,7 +214,7 @@ func (p *Poller) Seed(ctx context.Context, targetPosts int) (int, error) {
 			Limit: fetchLimit,
 		}
 		if cursorID > 0 {
-			opts.Query = fmt.Sprintf("id:<%d", cursorID)
+			opts.Query = query.ID(query.LessThan, cursorID).String()
 			opts.PageOffset = 0
 		} else {
 			opts.Query = ""
@@ -260,7 +261,7 @@ func (p *Poller) Seed(ctx context.Context, targetPosts int) (int, error) {
 				minBatchID = post.ID
 			}
 		}
-		cursorID = int64(minBatchID)
+		cursorID = minBatchID
 
 		p.cfg.Logger.InfoContext(ctx, "ingested seed page",
 			"page", pagesFetched,

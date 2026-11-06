@@ -111,6 +111,27 @@ type OpenGraph struct {
 	TwitterCard string
 }
 
+func absURL(r *http.Request, rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		return rawURL
+	}
+	proto := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		proto = "https"
+	}
+	host := r.Host
+	if host == "" {
+		host = "localhost"
+	}
+	if !strings.HasPrefix(rawURL, "/") {
+		rawURL = "/" + rawURL
+	}
+	return proto + "://" + host + rawURL
+}
+
 func thumbURL(p index.IndexedPost) string {
 	ext := strings.ToLower(p.FileExt)
 	sampleLower := strings.ToLower(p.SampleURL)
@@ -172,11 +193,6 @@ type Server struct {
 	devMode bool
 }
 
-// New creates a new web UI http.Handler backed by the local SQLite index Store.
-func New(store *index.Store, logger *slog.Logger, devMode ...bool) http.Handler {
-	return NewServer(store, logger, devMode...)
-}
-
 func devWebFS() fs.FS {
 	if fi, err := os.Stat("internal/server/web"); err == nil && fi.IsDir() {
 		return os.DirFS("internal/server/web")
@@ -192,20 +208,16 @@ func devWebFS() fs.FS {
 }
 
 // NewServer initializes the web UI Server.
-func NewServer(store *index.Store, logger *slog.Logger, devMode ...bool) *Server {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	isDev := len(devMode) > 0 && devMode[0]
+func NewServer(store *index.Store, devMode bool) *Server {
 	s := &Server{
 		store:   store,
 		mux:     chi.NewMux(),
-		logger:  logger,
-		devMode: isDev,
+		logger:  slog.Default().With("component", "web"),
+		devMode: devMode,
 	}
 
 	var staticHandler http.Handler
-	if isDev {
+	if devMode {
 		webFS := devWebFS()
 		staticSub, err := fs.Sub(webFS, "static")
 		var devFS http.Handler
@@ -671,7 +683,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 		Window:         index.Window(window),
 		Sort:           sortMode,
 		Rating:         hypnohub.Rating(rating),
-		MediaType:      media,
+		MediaType:      index.NormalizeMediaType(media),
 		CollapseGroups: mode == "browse",
 		IncludeTags:    inc,
 		ExcludeTags:    exc,
@@ -836,7 +848,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 			Title:       pageTitle,
 			Description: fmt.Sprintf("Browse %s indexed Hypnohub posts with fast tag filtering.", formatInt(res.Total)),
 			Type:        "website",
-			URL:         r.URL.Path,
+			URL:         absURL(r, r.URL.RequestURI()),
 			TwitterCard: "summary_large_image",
 		},
 	}
@@ -849,7 +861,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 	}
 	if len(res.Posts) > 0 {
 		top := res.Posts[0]
-		data.OpenGraph.Image = thumbURL(top)
+		data.OpenGraph.Image = absURL(r, thumbURL(top))
 		data.OpenGraph.ImageWidth = thumbWidth(top)
 		data.OpenGraph.ImageHeight = thumbHeight(top)
 	}
@@ -905,18 +917,6 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if post.HotScore <= 0 && post.Score > 0 {
-		effHours := post.WindowHours
-		if effHours < 0.1 {
-			effHours = 0.1
-		}
-		delta := post.ScoreDelta
-		if delta <= 0 {
-			delta = post.Score
-		}
-		post.HotScore = (float64(delta) / (effHours + 2.0)) * math.Pow(math.Max(1, float64(post.Score)), 0.35)
-	}
-
 	stats, _ := s.store.Stats(ctx)
 	if stats == nil {
 		stats = &index.Stats{}
@@ -970,14 +970,23 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	ogDesc := fmt.Sprintf("★ %d · %d×%d %s · Tags: %s", post.Score, post.Width, post.Height, strings.ToUpper(post.FileExt), strings.Join(tagsList, ", "))
 
+	ogImg := post.FileURL
+	ogW := post.Width
+	ogH := post.Height
+	if isVid {
+		ogImg = thumbURL(*post)
+		ogW = thumbWidth(*post)
+		ogH = thumbHeight(*post)
+	}
+
 	postOG := OpenGraph{
 		Title:       fmt.Sprintf("Post #%d (★ %d) — hypnogaze", post.ID, post.Score),
 		Description: ogDesc,
 		Type:        ogType,
-		URL:         fmt.Sprintf("/posts/%d", post.ID),
-		Image:       thumbURL(*post),
-		ImageWidth:  post.Width,
-		ImageHeight: post.Height,
+		URL:         absURL(r, fmt.Sprintf("/posts/%d", post.ID)),
+		Image:       absURL(r, ogImg),
+		ImageWidth:  ogW,
+		ImageHeight: ogH,
 		TwitterCard: "summary_large_image",
 	}
 	if isVid {

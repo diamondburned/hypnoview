@@ -13,18 +13,6 @@ type PollRun struct {
 	IsSeed        int64
 }
 
-type Pool struct {
-	ID        int64
-	Name      string
-	UpdatedAt int64
-}
-
-type PoolPost struct {
-	PoolID int64
-	PostID int64
-	Seq    int64
-}
-
 type Post struct {
 	ID             int64
 	CreatedAt      int64

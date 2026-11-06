@@ -49,11 +49,6 @@ func RegisterRoutes(r chi.Router, store *index.Store) {
 	})
 }
 
-// NewHandler initializes an http.Handler for the REST API with CORS enabled.
-func NewHandler(store *index.Store) http.Handler {
-	return NewServer(store)
-}
-
 // NewServer initializes the REST API Server wired to the local SQLite index Store.
 func NewServer(store *index.Store) *Server {
 	s := &Server{
@@ -199,7 +194,7 @@ func (s *Server) listPosts(ctx context.Context, input *ListPostsInput) (*ListPos
 		Window:      index.Window(input.Window),
 		Sort:        index.SortMode(input.Sort),
 		Rating:      hypnohub.Rating(input.Rating),
-		MediaType:   input.MediaType,
+		MediaType:   index.NormalizeMediaType(input.MediaType),
 		IncludeTags: inc,
 		ExcludeTags: exc,
 		Limit:       input.Limit,

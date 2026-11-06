@@ -60,7 +60,7 @@ func TestWebFeeds(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	srv := NewServer(store, nil)
+	srv := NewServer(store, false)
 
 	tests := []struct {
 		name          string
@@ -220,7 +220,7 @@ func TestUserPrefsCookie(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	srv := NewServer(store, nil)
+	srv := NewServer(store, false)
 
 	// 1. Without cookie: / has post 501 and 500
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -296,7 +296,7 @@ func TestTagSuggestionsEndpoint(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	srv := NewServer(store, nil)
+	srv := NewServer(store, false)
 
 	// 1. Multi-tag with negative prefix: ?tags=hypnosis+-sp
 	req := httptest.NewRequest(http.MethodGet, "/ui/tags/suggest?tags=hypnosis+-sp", nil)
@@ -376,7 +376,7 @@ func TestRobotsTxtAndOpenGraph(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	srv := New(store, nil)
+	srv := NewServer(store, false)
 
 	// 1. /robots.txt
 	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
@@ -442,7 +442,7 @@ func TestWebAPICORS(t *testing.T) {
 	}
 	defer store.Close()
 
-	srv := New(store, nil)
+	srv := NewServer(store, false)
 
 	// GET /api/v1/stats
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
@@ -521,7 +521,7 @@ func TestBackURLAndRobotsMeta(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	srv := New(store, nil)
+	srv := NewServer(store, false)
 
 	// 1. Safe back URL is preserved in ← Back to Feed link
 	req := httptest.NewRequest(http.MethodGet, "/posts/1?back=%2Fpopular%3Fwindow%3D7d", nil)

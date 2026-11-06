@@ -121,6 +121,64 @@ CREATE INDEX IF NOT EXISTS idx_posts_browse_collapsed_rating_new ON posts(status
 
 WITH RECURSIVE
 edges(u, v) AS (
+    SELECT id, parent_id FROM posts WHERE parent_id > 0 AND parent_id != id
+    UNION
+    SELECT parent_id, id FROM posts WHERE parent_id > 0 AND parent_id != id
+),
+cc(node, comp) AS (
+    SELECT u, u FROM edges
+    UNION
+    SELECT e.v, cc.comp
+    FROM edges e
+    JOIN cc ON e.u = cc.node
+    WHERE cc.comp < e.v
+),
+existing_cc AS (
+    SELECT p.id AS post_id, MIN(cc.comp) AS raw_comp
+    FROM cc
+    JOIN posts p ON p.id = cc.node
+    GROUP BY p.id
+),
+comp_stats AS (
+    SELECT
+        raw_comp,
+        MIN(post_id) AS canonical_group_id,
+        COUNT(*) AS page_count,
+        COALESCE(MAX(CASE WHEN p.status = 'active' THEN p.id END), MAX(p.id)) AS latest_post_id
+    FROM existing_cc ec
+    JOIN posts p ON p.id = ec.post_id
+    GROUP BY raw_comp
+    HAVING COUNT(*) > 1
+),
+resolved AS (
+    SELECT
+        ec.post_id,
+        cs.canonical_group_id AS group_id,
+        cs.page_count AS group_page_count,
+        CASE WHEN ec.post_id = cs.latest_post_id THEN 1 ELSE 0 END AS group_is_latest
+    FROM existing_cc ec
+    JOIN comp_stats cs ON cs.raw_comp = ec.raw_comp
+)
+UPDATE posts
+SET
+    group_id         = COALESCE((SELECT r.group_id FROM resolved r WHERE r.post_id = posts.id), 0),
+    group_page_count = COALESCE((SELECT r.group_page_count FROM resolved r WHERE r.post_id = posts.id), 1),
+    group_is_latest  = COALESCE((SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id), 1)
+WHERE parent_id > 0 OR has_children = 1;
+
+--------------------------------- NEW VERSION ---------------------------------
+
+DROP TABLE IF EXISTS pool_posts;
+DROP TABLE IF EXISTS pools;
+
+UPDATE posts
+SET group_id = 0,
+    group_page_count = 1,
+    group_is_latest = CASE WHEN status = 'active' THEN 1 ELSE 0 END
+WHERE group_id > 0 OR status != 'active' OR parent_id > 0 OR has_children = 1;
+
+WITH RECURSIVE
+edges(u, v) AS (
     SELECT p.id, p.parent_id FROM posts p
     LEFT JOIN posts parent ON parent.id = p.parent_id
     WHERE p.status = 'active' AND p.parent_id > 0 AND p.parent_id != p.id
@@ -167,13 +225,10 @@ resolved AS (
 )
 UPDATE posts
 SET
-    group_id         = COALESCE((SELECT r.group_id FROM resolved r WHERE r.post_id = posts.id), 0),
-    group_page_count = COALESCE((SELECT r.group_page_count FROM resolved r WHERE r.post_id = posts.id), 1),
-    group_is_latest  = CASE
-        WHEN posts.status != 'active' THEN 0
-        ELSE COALESCE((SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id), 1)
-    END
-WHERE parent_id > 0 OR has_children = 1 OR status != 'active';
+    group_id         = (SELECT r.group_id FROM resolved r WHERE r.post_id = posts.id),
+    group_page_count = (SELECT r.group_page_count FROM resolved r WHERE r.post_id = posts.id),
+    group_is_latest  = (SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id)
+WHERE id IN (SELECT post_id FROM resolved);
 
 
 

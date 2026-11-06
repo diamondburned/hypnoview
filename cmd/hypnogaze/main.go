@@ -116,7 +116,7 @@ func main() {
 		}()
 	}
 
-	webServer := web.NewServer(store, logger.With("component", "web"), opts.devMode)
+	webServer := web.NewServer(store, opts.devMode)
 
 	reqLogger := httplog.NewLogger("http", httplog.Options{
 		LogLevel: logLevel,
