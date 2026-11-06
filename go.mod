@@ -6,6 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.40.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/httplog/v2 v2.0.8
+	github.com/huandu/go-sqlbuilder v1.44.1
 	github.com/lmittmann/tint v1.0.3
 	github.com/spf13/pflag v1.0.10
 	libdb.so/hserve v0.0.0-20230404043009-95e112a6e0a5
@@ -16,6 +17,8 @@ require (
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/huandu/go-clone v1.7.3 // indirect
+	github.com/huandu/xstrings v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

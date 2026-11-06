@@ -16,6 +16,7 @@ import (
 
 	"gaze.d14.pet"
 	"gaze.d14.pet/internal/index/sqlcgen"
+	"github.com/huandu/go-sqlbuilder"
 	"libdb.so/lazymigrate"
 	"modernc.org/sqlite"
 )
@@ -441,13 +442,11 @@ func (s *Store) IngestBatch(
 	for i := 0; i < len(batchIDs); i += 500 {
 		end := min(len(batchIDs), i+500)
 		chunk := batchIDs[i:end]
-		placeholders := strings.Repeat("?,", len(chunk))
-		placeholders = placeholders[:len(placeholders)-1]
-		q := fmt.Sprintf("SELECT id, parent_id, group_id FROM posts WHERE id IN (%s)", placeholders)
-		args := make([]any, len(chunk))
-		for idx, id := range chunk {
-			args[idx] = id
-		}
+		sb := sqlbuilder.SQLite.NewSelectBuilder()
+		sb.Select("id", "parent_id", "group_id").
+			From("posts").
+			Where(sb.In("id", sqlbuilder.Flatten(chunk)...))
+		q, args := sb.Build()
 		rows, err := tx.QueryContext(ctx, q, args...)
 		if err == nil {
 			for rows.Next() {
@@ -639,26 +638,22 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 			end := min(len(batch), i+500)
 			chunk := batch[i:end]
 
-			placeholders := strings.Repeat("?,", len(chunk))
-			placeholders = placeholders[:len(placeholders)-1]
+			sb := sqlbuilder.SQLite.NewSelectBuilder()
+			flatChunk := sqlbuilder.Flatten(chunk)
+			sb.Select("id", "parent_id", "group_id", "status").
+				From("posts").
+				Where(
+					sb.Or(
+						sb.In("id", flatChunk...),
+						sb.In("parent_id", flatChunk...),
+						sb.And(
+							sb.GreaterThan("group_id", 0),
+							sb.In("group_id", flatChunk...),
+						),
+					),
+				)
 
-			query := fmt.Sprintf(`
-				SELECT id, parent_id, group_id, status
-				FROM posts
-				WHERE id IN (%s) OR parent_id IN (%s) OR (group_id > 0 AND group_id IN (%s))
-			`, placeholders, placeholders, placeholders)
-
-			args := make([]any, 0, len(chunk)*3)
-			for _, id := range chunk {
-				args = append(args, id)
-			}
-			for _, id := range chunk {
-				args = append(args, id)
-			}
-			for _, id := range chunk {
-				args = append(args, id)
-			}
-
+			query, args := sb.Build()
 			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				return fmt.Errorf("querying posts for group recompute: %w", err)
@@ -813,6 +808,112 @@ type QueryResult struct {
 	Sort        SortMode      `json:"sort"`
 	WindowStart time.Time     `json:"window_start"`
 	WindowEnd   time.Time     `json:"window_end"`
+}
+
+var basePostColumns = []string{
+	"p.id", "p.created_at", "p.changed_at", "p.score", "p.rating", "p.creator_id", "p.parent_id",
+	"p.md5", "p.source", "p.status", "p.has_notes", "p.has_comments", "p.has_children",
+	"p.file_url", "p.file_ext", "p.width", "p.height",
+	"p.sample_url", "p.sample_width", "p.sample_height",
+	"p.preview_url", "p.preview_width", "p.preview_height",
+	"p.tags_raw", "p.first_seen_at", "p.last_polled_at",
+	"p.group_id", "p.group_is_latest", "p.group_page_count",
+}
+
+func applyPostFilters(sb *sqlbuilder.SelectBuilder, opts QueryOptions, ratingStr, mediaTypeStr string, includeTags, excludeTags []string, winDur time.Duration, windowStartUnix int64, hasFilters bool) {
+	sb.Where(sb.Equal("p.status", "active"))
+	if opts.CollapseGroups && !hasFilters {
+		sb.Where(sb.Equal("p.group_is_latest", 1))
+	}
+	if winDur > 0 {
+		sb.Where(sb.Or(
+			sb.GreaterEqualThan("p.created_at", windowStartUnix),
+			sb.And(
+				sb.IsNotNull("b.start_score"),
+				"p.score > b.start_score",
+			),
+		))
+	}
+	if ratingStr != "" {
+		sb.Where(sb.Equal("p.rating", ratingStr))
+	}
+	switch mediaTypeStr {
+	case "video":
+		sb.Where(sb.In("p.file_ext", "mp4", "webm"))
+	case "animated":
+		sb.Where(sb.In("p.file_ext", "mp4", "webm", "gif"))
+	case "image":
+		sb.Where(sb.NotIn("p.file_ext", "mp4", "webm", "gif"))
+	}
+	for _, tag := range includeTags {
+		sub := sqlbuilder.SQLite.NewSelectBuilder()
+		sub.Select("pt.post_id").
+			From("post_tags pt").
+			Join("tags t", "t.id = pt.tag_id").
+			Where(sub.Equal("t.name", tag))
+		sb.Where(sb.In("p.id", sub))
+	}
+	for _, tag := range excludeTags {
+		sub := sqlbuilder.SQLite.NewSelectBuilder()
+		sub.Select("pt.post_id").
+			From("post_tags pt").
+			Join("tags t", "t.id = pt.tag_id").
+			Where(sub.Equal("t.name", tag))
+		sb.Where(sb.NotIn("p.id", sub))
+	}
+}
+
+func allTimePostColumns(sb *sqlbuilder.SelectBuilder, nowUnix int64, tau float64) []string {
+	cols := make([]string, len(basePostColumns), len(basePostColumns)+5)
+	copy(cols, basePostColumns)
+
+	nowVar1 := sb.Var(nowUnix)
+	nowVar2 := sb.Var(nowUnix)
+	nowVar3 := sb.Var(nowUnix)
+	tauVar1 := sb.Var(tau)
+	tauVar2 := sb.Var(tau)
+
+	cols = append(cols,
+		"0 AS baseline_score",
+		"p.score AS score_delta",
+		fmt.Sprintf("MAX(0.1, (%s - p.created_at) / 3600.0) AS window_hours", nowVar1),
+		fmt.Sprintf("CAST(p.score AS REAL) / (MAX(0.1, (%s - p.created_at) / 3600.0) + %s) AS score_rate", nowVar2, tauVar1),
+		fmt.Sprintf("(CAST(p.score AS REAL) / (MAX(0.1, (%s - p.created_at) / 3600.0) + %s)) * POWER(MAX(1, p.score), 0.35) AS hot_score", nowVar3, tauVar2),
+	)
+	return cols
+}
+
+func windowedPostColumns(sb *sqlbuilder.SelectBuilder, windowStartUnix, nowUnix int64, tau float64) []string {
+	cols := make([]string, len(basePostColumns), len(basePostColumns)+5)
+	copy(cols, basePostColumns)
+
+	bExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN 0 ELSE COALESCE(b.start_score, p.score) END", sb.Var(windowStartUnix))
+	dExpr := fmt.Sprintf("CASE WHEN p.created_at >= %s THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END", sb.Var(windowStartUnix))
+	effExpr := fmt.Sprintf("MAX(0.1, (%s - CASE WHEN p.created_at >= %s THEN p.created_at ELSE COALESCE(b.start_time, %s) END) / 3600.0)",
+		sb.Var(nowUnix), sb.Var(windowStartUnix), sb.Var(windowStartUnix))
+	rateExpr := fmt.Sprintf("CAST(%s AS REAL) / (%s + %s)", dExpr, effExpr, sb.Var(tau))
+	hotExpr := fmt.Sprintf("(CAST(%s AS REAL) / (%s + %s)) * POWER(MAX(1, p.score), 0.35)", dExpr, effExpr, sb.Var(tau))
+
+	cols = append(cols,
+		bExpr+" AS baseline_score",
+		dExpr+" AS score_delta",
+		effExpr+" AS window_hours",
+		rateExpr+" AS score_rate",
+		hotExpr+" AS hot_score",
+	)
+	return cols
+}
+
+func newBaselineCTE(windowStartUnix, nowUnix int64) *sqlbuilder.CTEQueryBuilder {
+	baseSB := sqlbuilder.SQLite.NewSelectBuilder()
+	baseSB.Select("post_id", "score AS start_score", "MIN(poll_time) AS start_time").
+		From("score_snapshots").
+		Where(
+			baseSB.GreaterEqualThan("poll_time", windowStartUnix),
+			baseSB.LessThan("poll_time", nowUnix),
+		).
+		GroupBy("post_id")
+	return sqlbuilder.SQLite.NewCTEQueryBuilder().Table("baseline").As(baseSB)
 }
 
 // QueryPosts queries the local SQLite index for posts matching the given window,
@@ -1075,148 +1176,76 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 	}
 
 	// Dynamic path: Required when includeTags or excludeTags are present, or when collapsing groups with rating/tags.
-	var (
-		whereClauses = []string{"p.status = 'active'"}
-		whereArgs    []any
-	)
-
 	dynamicCollapse := opts.CollapseGroups && hasFilters
-	if opts.CollapseGroups && !hasFilters {
-		whereClauses = append(whereClauses, "p.group_is_latest = 1")
-	}
 
-	if winDur > 0 {
-		whereClauses = append(whereClauses, "(p.created_at >= ? OR (b.start_score IS NOT NULL AND p.score > b.start_score))")
-		whereArgs = append(whereArgs, windowStartUnix)
-	}
-
-	if ratingStr != "" {
-		whereClauses = append(whereClauses, "p.rating = ?")
-		whereArgs = append(whereArgs, ratingStr)
-	}
-
-	switch mediaTypeStr {
-	case "video":
-		whereClauses = append(whereClauses, "p.file_ext IN ('mp4', 'webm')")
-	case "animated":
-		whereClauses = append(whereClauses, "p.file_ext IN ('mp4', 'webm', 'gif')")
-	case "image":
-		whereClauses = append(whereClauses, "p.file_ext NOT IN ('mp4', 'webm', 'gif')")
-	}
-
-	for _, tag := range includeTags {
-		whereClauses = append(whereClauses, `p.id IN (
-			SELECT pt.post_id FROM post_tags pt
-			JOIN tags t ON t.id = pt.tag_id
-			WHERE t.name = ?
-		)`)
-		whereArgs = append(whereArgs, tag)
-	}
-
-	for _, tag := range excludeTags {
-		whereClauses = append(whereClauses, `p.id NOT IN (
-			SELECT pt.post_id FROM post_tags pt
-			JOIN tags t ON t.id = pt.tag_id
-			WHERE t.name = ?
-		)`)
-		whereArgs = append(whereArgs, tag)
-	}
-
-	whereSQL := strings.Join(whereClauses, " AND ")
-
-	var orderBySQL string
+	var orderCols []string
 	switch sortMode {
 	case SortHot:
-		orderBySQL = "hot_score DESC, score_rate DESC, score_delta DESC, p.score DESC, p.id DESC"
+		orderCols = []string{"hot_score DESC", "score_rate DESC", "score_delta DESC", "p.score DESC", "p.id DESC"}
 	case SortTop:
-		orderBySQL = "score_delta DESC, hot_score DESC, score_rate DESC, p.score DESC, p.id DESC"
+		orderCols = []string{"score_delta DESC", "hot_score DESC", "score_rate DESC", "p.score DESC", "p.id DESC"}
 	case SortNew:
-		orderBySQL = "p.created_at DESC, p.id DESC"
+		orderCols = []string{"p.created_at DESC", "p.id DESC"}
 	case SortScore:
-		orderBySQL = "p.score DESC, p.id DESC"
+		orderCols = []string{"p.score DESC", "p.id DESC"}
 	}
 
 	if winDur == 0 {
 		// All-time window with tag filters: Fast path avoiding score_snapshots join!
 		var total int
-		var countQuery, querySQL string
+		var countQuery string
+		var countArgs []any
+		var querySQL string
+		var queryArgs []any
 
 		if dynamicCollapse {
-			countQuery = fmt.Sprintf(`
-				WITH matched AS (
-					SELECT p.id, p.group_id
-					FROM posts p
-					WHERE %s
-				)
-				SELECT COUNT(*) FROM (
-					SELECT 1 FROM matched
-					GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
-				)
-			`, whereSQL)
+			matchedSB := sqlbuilder.SQLite.NewSelectBuilder()
+			matchedSB.Select("p.id", "p.group_id").From("posts p")
+			applyPostFilters(matchedSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+			matchedCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedSB)
 
-			querySQL = fmt.Sprintf(`
-				WITH matched AS (
-					SELECT
-						p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-						p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-						p.file_url, p.file_ext, p.width, p.height,
-						p.sample_url, p.sample_width, p.sample_height,
-						p.preview_url, p.preview_width, p.preview_height,
-						p.tags_raw, p.first_seen_at, p.last_polled_at,
-						p.group_id, p.group_is_latest, p.group_page_count,
-						0 AS baseline_score,
-						p.score AS score_delta,
-						MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
-						CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?) AS score_rate,
-						(CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-					FROM posts p
-					WHERE %s
-				)
-				SELECT * FROM matched p
-				WHERE p.id IN (
-					SELECT MAX(id) FROM matched
-					GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
-				)
-				ORDER BY %s
-				LIMIT ? OFFSET ?
-			`, whereSQL, orderBySQL)
+			inner := sqlbuilder.SQLite.NewSelectBuilder()
+			inner.Select("1").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
+
+			countSB := sqlbuilder.SQLite.NewSelectBuilder()
+			countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(matchedCTE))
+			countSB.Select("COUNT(*)").From(countSB.BuilderAs(inner, "sub"))
+			countQuery, countArgs = countSB.Build()
+
+			matchedQuerySB := sqlbuilder.SQLite.NewSelectBuilder()
+			matchedQuerySB.Select(allTimePostColumns(matchedQuerySB, nowUnix, tau)...).From("posts p")
+			applyPostFilters(matchedQuerySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+			matchedQueryCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedQuerySB)
+
+			maxSub := sqlbuilder.SQLite.NewSelectBuilder()
+			maxSub.Select("MAX(id)").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
+
+			querySB := sqlbuilder.SQLite.NewSelectBuilder()
+			querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(matchedQueryCTE))
+			querySB.Select("*").From("matched p").
+				Where(querySB.In("p.id", maxSub)).
+				OrderBy(orderCols...).
+				Limit(limit).
+				Offset(offset)
+			querySQL, queryArgs = querySB.Build()
 		} else {
-			countQuery = fmt.Sprintf(`SELECT COUNT(*) FROM posts p WHERE %s`, whereSQL)
-			querySQL = fmt.Sprintf(`
-				SELECT
-					p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-					p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-					p.file_url, p.file_ext, p.width, p.height,
-					p.sample_url, p.sample_width, p.sample_height,
-					p.preview_url, p.preview_width, p.preview_height,
-					p.tags_raw, p.first_seen_at, p.last_polled_at,
-					p.group_id, p.group_is_latest, p.group_page_count,
-					0 AS baseline_score,
-					p.score AS score_delta,
-					MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
-					CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?) AS score_rate,
-					(CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-				FROM posts p
-				WHERE %s
-				ORDER BY %s
-				LIMIT ? OFFSET ?
-			`, whereSQL, orderBySQL)
+			countSB := sqlbuilder.SQLite.NewSelectBuilder()
+			countSB.Select("COUNT(*)").From("posts p")
+			applyPostFilters(countSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+			countQuery, countArgs = countSB.Build()
+
+			querySB := sqlbuilder.SQLite.NewSelectBuilder()
+			querySB.Select(allTimePostColumns(querySB, nowUnix, tau)...).From("posts p")
+			applyPostFilters(querySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+			querySB.OrderBy(orderCols...).Limit(limit).Offset(offset)
+			querySQL, queryArgs = querySB.Build()
 		}
 
-		if err := s.db.QueryRowContext(ctx, countQuery, whereArgs...).Scan(&total); err != nil {
+		if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 			return nil, fmt.Errorf("counting posts: %w", err)
 		}
 
-		args := make([]any, 0, 5+len(whereArgs)+2)
-		args = append(args,
-			nowUnix,
-			nowUnix, tau,
-			nowUnix, tau,
-		)
-		args = append(args, whereArgs...)
-		args = append(args, limit, offset)
-
-		rows, err := s.db.QueryContext(ctx, querySQL, args...)
+		rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("querying posts all dynamic: %w", err)
 		}
@@ -1250,136 +1279,69 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 	}
 
 	// Windowed dynamic query with score_snapshots baseline CTE:
-	const baselineCTE = `
-		WITH baseline AS (
-			SELECT post_id, score AS start_score, MIN(poll_time) AS start_time
-			FROM score_snapshots
-			WHERE poll_time >= ? AND poll_time < ?
-			GROUP BY post_id
-		)
-	`
-
-	const (
-		baselineExpr = `CASE WHEN p.created_at >= ? THEN 0 ELSE COALESCE(b.start_score, p.score) END`
-		deltaExpr    = `CASE WHEN p.created_at >= ? THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END`
-		effHoursExpr = `MAX(0.1, (? - CASE WHEN p.created_at >= ? THEN p.created_at ELSE COALESCE(b.start_time, ?) END) / 3600.0)`
-	)
-
 	var total int
-	var countQuery, querySQL string
+	var countQuery string
+	var countArgs []any
+	var querySQL string
+	var queryArgs []any
 
 	if dynamicCollapse {
-		countQuery = fmt.Sprintf(`
-			%s,
-			matched AS (
-				SELECT p.id, p.group_id
-				FROM posts p
-				LEFT JOIN baseline b ON b.post_id = p.id
-				WHERE %s
-			)
-			SELECT COUNT(*) FROM (
-				SELECT 1 FROM matched
-				GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
-			)
-		`, baselineCTE, whereSQL)
+		matchedSB := sqlbuilder.SQLite.NewSelectBuilder()
+		matchedSB.Select("p.id", "p.group_id").
+			From("posts p").
+			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+		applyPostFilters(matchedSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+		matchedCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedSB)
 
-		querySQL = fmt.Sprintf(`
-			%s,
-			matched AS (
-				SELECT
-					p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-					p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-					p.file_url, p.file_ext, p.width, p.height,
-					p.sample_url, p.sample_width, p.sample_height,
-					p.preview_url, p.preview_width, p.preview_height,
-					p.tags_raw, p.first_seen_at, p.last_polled_at,
-					p.group_id, p.group_is_latest, p.group_page_count,
-					%s AS baseline_score,
-					%s AS score_delta,
-					%s AS window_hours,
-					CAST(%s AS REAL) / (%s + ?) AS score_rate,
-					(CAST(%s AS REAL) / (%s + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-				FROM posts p
-				LEFT JOIN baseline b ON b.post_id = p.id
-				WHERE %s
-			)
-			SELECT * FROM matched p
-			WHERE p.id IN (
-				SELECT MAX(id) FROM matched
-				GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
-			)
-			ORDER BY %s
-			LIMIT ? OFFSET ?
-		`,
-			baselineCTE,
-			baselineExpr,
-			deltaExpr,
-			effHoursExpr,
-			deltaExpr,
-			effHoursExpr,
-			deltaExpr,
-			effHoursExpr,
-			whereSQL,
-			orderBySQL,
-		)
+		inner := sqlbuilder.SQLite.NewSelectBuilder()
+		inner.Select("1").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
+
+		countSB := sqlbuilder.SQLite.NewSelectBuilder()
+		countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix), matchedCTE))
+		countSB.Select("COUNT(*)").From(countSB.BuilderAs(inner, "sub"))
+		countQuery, countArgs = countSB.Build()
+
+		matchedQuerySB := sqlbuilder.SQLite.NewSelectBuilder()
+		matchedQuerySB.Select(windowedPostColumns(matchedQuerySB, windowStartUnix, nowUnix, tau)...).
+			From("posts p").
+			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+		applyPostFilters(matchedQuerySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+		matchedQueryCTE := sqlbuilder.SQLite.NewCTEQueryBuilder().Table("matched").As(matchedQuerySB)
+
+		maxSub := sqlbuilder.SQLite.NewSelectBuilder()
+		maxSub.Select("MAX(id)").From("matched").GroupBy("CASE WHEN group_id > 0 THEN group_id ELSE id END")
+
+		querySB := sqlbuilder.SQLite.NewSelectBuilder()
+		querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix), matchedQueryCTE))
+		querySB.Select("*").From("matched p").
+			Where(querySB.In("p.id", maxSub)).
+			OrderBy(orderCols...).
+			Limit(limit).
+			Offset(offset)
+		querySQL, queryArgs = querySB.Build()
 	} else {
-		countQuery = fmt.Sprintf(`%s SELECT COUNT(*) FROM posts p LEFT JOIN baseline b ON b.post_id = p.id WHERE %s`, baselineCTE, whereSQL)
-		querySQL = fmt.Sprintf(`
-			%s
-			SELECT
-				p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-				p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-				p.file_url, p.file_ext, p.width, p.height,
-				p.sample_url, p.sample_width, p.sample_height,
-				p.preview_url, p.preview_width, p.preview_height,
-				p.tags_raw, p.first_seen_at, p.last_polled_at,
-				p.group_id, p.group_is_latest, p.group_page_count,
-				%s AS baseline_score,
-				%s AS score_delta,
-				%s AS window_hours,
-				CAST(%s AS REAL) / (%s + ?) AS score_rate,
-				(CAST(%s AS REAL) / (%s + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-			FROM posts p
-			LEFT JOIN baseline b ON b.post_id = p.id
-			WHERE %s
-			ORDER BY %s
-			LIMIT ? OFFSET ?
-		`,
-			baselineCTE,
-			baselineExpr,
-			deltaExpr,
-			effHoursExpr,
-			deltaExpr,
-			effHoursExpr,
-			deltaExpr,
-			effHoursExpr,
-			whereSQL,
-			orderBySQL,
-		)
+		countSB := sqlbuilder.SQLite.NewSelectBuilder()
+		countSB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix)))
+		countSB.Select("COUNT(*)").From("posts p").
+			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+		applyPostFilters(countSB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+		countQuery, countArgs = countSB.Build()
+
+		querySB := sqlbuilder.SQLite.NewSelectBuilder()
+		querySB.With(sqlbuilder.SQLite.NewCTEBuilder().With(newBaselineCTE(windowStartUnix, nowUnix)))
+		querySB.Select(windowedPostColumns(querySB, windowStartUnix, nowUnix, tau)...).
+			From("posts p").
+			JoinWithOption(sqlbuilder.LeftJoin, "baseline b", "b.post_id = p.id")
+		applyPostFilters(querySB, opts, ratingStr, mediaTypeStr, includeTags, excludeTags, winDur, windowStartUnix, hasFilters)
+		querySB.OrderBy(orderCols...).Limit(limit).Offset(offset)
+		querySQL, queryArgs = querySB.Build()
 	}
 
-	countArgs := make([]any, 0, 2+len(whereArgs))
-	countArgs = append(countArgs, windowStartUnix, nowUnix)
-	countArgs = append(countArgs, whereArgs...)
 	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("counting posts: %w", err)
 	}
 
-	args := make([]any, 0, 18+len(whereArgs))
-	args = append(args,
-		windowStartUnix, nowUnix, // CTE baseline
-		windowStartUnix,                           // baselineExpr
-		windowStartUnix,                           // deltaExpr
-		nowUnix, windowStartUnix, windowStartUnix, // effHoursExpr
-		windowStartUnix,                                // score_rate deltaExpr
-		nowUnix, windowStartUnix, windowStartUnix, tau, // score_rate effHoursExpr + tau
-		windowStartUnix,                                // hot_score deltaExpr
-		nowUnix, windowStartUnix, windowStartUnix, tau, // hot_score effHoursExpr + tau
-	)
-	args = append(args, whereArgs...)
-	args = append(args, limit, offset)
-
-	rows, err := s.db.QueryContext(ctx, querySQL, args...)
+	rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying windowed posts dynamic: %w", err)
 	}

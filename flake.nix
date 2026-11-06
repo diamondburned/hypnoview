@@ -37,7 +37,7 @@
 
               subPackages = [ "cmd/hypnogaze" ];
 
-              vendorHash = "sha256-KmsFIXKRl39YvWy3/5xnNHWYhAN6apN7dw+h9/LTnRM=";
+              vendorHash = "sha256-CSZz8Sef4mlvHqMjibJRNVfFwyxZBKcejrwiZE8g8xA=";
 
               checkFlags = [ "-skip=Example" ];
 
