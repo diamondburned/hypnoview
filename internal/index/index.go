@@ -1192,6 +1192,9 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 	}
 
 	s.resolvePostTagCategories(ctx, id, tagRows)
+	if reloaded, err := s.q.GetPostTagsWithCategory(ctx, int64(id)); err == nil {
+		tagRows = reloaded
+	}
 
 	if len(tagRows) > 0 {
 		postTags := make([]PostTag, len(tagRows))
@@ -1456,16 +1459,20 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 	updates := make(map[string]hypnohub.TagType, len(names))
 
 	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve unknown tags in 1 request.
-	page := int(s.tagSweepPage.Add(1) - 1)
-	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr != nil {
+	page := int(s.tagSweepPage.Load())
+	bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000)
+	if bulkErr != nil {
 		slog.Warn("bulk tag page failed", "page", page, "err", bulkErr)
+	} else if len(bulkTags) == 0 {
+		s.tagSweepPage.Store(0)
 	} else {
-		if len(bulkTags) == 0 {
-			s.tagSweepPage.Store(0)
-		}
+		s.tagSweepPage.Store(int64((page + 1) % 50))
 		for _, bt := range bulkTags {
+			if len(updates) >= limit {
+				break
+			}
 			name := strings.ToLower(strings.TrimSpace(bt.Name))
-			if _, isUnknown := unknownSet[name]; isUnknown {
+			if _, isUnknown := unknownSet[name]; isUnknown && name != "" {
 				updates[name] = bt.Type.Normalize()
 			}
 		}

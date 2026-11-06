@@ -2430,10 +2430,15 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	}
 
 	var seenBulkPIDs []string
+	var failBulk atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("orderby") == "count" {
 			seenBulkPIDs = append(seenBulkPIDs, q.Get("pid"))
+			if failBulk.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
 			if q.Get("pid") == "0" {
 				// Return tags NOT in unknownSet on page 0 so updates is not polluted by unrelated tags.
@@ -2503,5 +2508,20 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	}
 	if store.tagSweepPage.Load() != 0 {
 		t.Errorf("expected tagSweepPage reset to 0 after empty bulk page, got %d", store.tagSweepPage.Load())
+	}
+
+	// Third call with failing ListTagsPage keeps tagSweepPage on page 0 so the next cycle retries page 0.
+	failBulk.Store(true)
+	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	if store.tagSweepPage.Load() != 0 {
+		t.Errorf("expected tagSweepPage to remain 0 after failed ListTagsPage, got %d", store.tagSweepPage.Load())
+	}
+	failBulk.Store(false)
+	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	if len(seenBulkPIDs) != 4 || seenBulkPIDs[2] != "0" || seenBulkPIDs[3] != "0" {
+		t.Errorf("expected failed page 0 to be retried on next cycle, got PIDs %v", seenBulkPIDs)
+	}
+	if store.tagSweepPage.Load() != 1 {
+		t.Errorf("expected tagSweepPage = 1 after retrying page 0, got %d", store.tagSweepPage.Load())
 	}
 }

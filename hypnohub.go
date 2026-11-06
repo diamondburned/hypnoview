@@ -401,9 +401,9 @@ func (c *Client) TagByName(ctx context.Context, name string) (*Tag, error) {
 }
 
 var (
-	tagSidebarULRe = regexp.MustCompile(`(?is)<ul[^>]*\bid=["']tag-sidebar["'][^>]*>([\s\S]*?)</ul>`)
-	tagSidebarLIRe = regexp.MustCompile(`(?is)<li[^>]*\bclass=["'][^"']*\btag-type-(copyright|character|artist|general|metadata|meta)\b[^"']*["'][^>]*>([\s\S]*?)</li>`)
-	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b([^>]*)>([\s\S]*?)</a>`)
+	tagSidebarULRe = regexp.MustCompile(`(?is)<ul[^>]*\bid=["']tag-sidebar["'][^>]*>(.*?)</ul>`)
+	tagSidebarLIRe = regexp.MustCompile(`(?is)<li[^>]*\bclass=["'][^"']*\btag-type-(copyright|character|artist|general|metadata|meta)\b[^"']*["'][^>]*>(.*?)</li>`)
+	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 	hrefAttrRe     = regexp.MustCompile(`(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 	htmlTagStripRe = regexp.MustCompile(`(?is)<[^>]+>`)
 )
