@@ -80,9 +80,13 @@ func TestWebFeeds(t *testing.T) {
 				`action="/"`,
 				`Post #501`,
 				`Post #500`,
+				`id="post-overlay-slot"`,
+				`?back=`,
 			},
 			unwantSubstrs: []string{
 				`aria-current="page">Popular</a>`,
+				`id="lightbox"`,
+				`class="lightbox"`,
 			},
 		},
 		{
@@ -93,9 +97,13 @@ func TestWebFeeds(t *testing.T) {
 				`aria-current="page">Popular</a>`,
 				`action="/popular"`,
 				`Post #501`,
+				`id="post-overlay-slot"`,
+				`?back=`,
 			},
 			unwantSubstrs: []string{
 				`aria-current="page">Browse</a>`,
+				`id="lightbox"`,
+				`class="lightbox"`,
 			},
 		},
 		{
@@ -106,6 +114,15 @@ func TestWebFeeds(t *testing.T) {
 				`← Back to Feed`,
 				`Post #501`,
 				`https://hypnohub.net/images/501.mp4`,
+				`id="post-detail"`,
+				`id="sheet-handle-zone"`,
+				`post-back-btn`,
+				`post-close-btn`,
+				`id="sheet-backdrop"`,
+			},
+			unwantSubstrs: []string{
+				`id="lightbox"`,
+				`class="lightbox"`,
 			},
 		},
 	}

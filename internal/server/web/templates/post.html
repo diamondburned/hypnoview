@@ -1,7 +1,10 @@
 {{ define "content" }}
 <div class="post-detail" id="post-detail">
 	<div class="post-detail-nav">
-		<a href="{{ .BackURL }}" class="page-btn">← Back to Feed</a>
+		<a href="{{ .BackURL }}" class="page-btn post-back-btn" id="post-back-btn">← Back to Feed</a>
+		<button type="button" class="icon-btn post-close-btn" id="post-close-btn" aria-label="Close preview">
+			<span class="material-symbols-rounded" aria-hidden="true">close</span>
+		</button>
 	</div>
 
 	<div class="post-detail-grid">
@@ -24,7 +27,6 @@
 							hx-target="#post-detail"
 							hx-select="#post-detail"
 							hx-swap="outerHTML show:none"
-							hx-push-url="true"
 						>← Prev</a>
 						{{ else }}
 						<span class="page-btn group-nav-btn disabled" aria-disabled="true">← Prev</span>
@@ -40,7 +42,6 @@
 							hx-target="#post-detail"
 							hx-select="#post-detail"
 							hx-swap="outerHTML show:none"
-							hx-push-url="true"
 						>Next →</a>
 						{{ else }}
 						<span class="page-btn group-nav-btn disabled" aria-disabled="true">Next →</span>
@@ -61,7 +62,6 @@
 						hx-target="#post-detail"
 						hx-select="#post-detail"
 						hx-swap="outerHTML show:none"
-						hx-push-url="true"
 					>{{ $pageNo }}</a>
 					{{ end }}
 				</div>
@@ -79,6 +79,35 @@
 				data-sample-url="{{ thumbURL .Post }}"
 				data-preview-url="{{ .Post.PreviewURL }}"
 			>
+				{{ if gt (len .GroupPosts) 1 }}
+				{{ if .PrevGroupPostID }}
+				<a
+					href="/posts/{{ .PrevGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
+					id="post-group-prev"
+					class="stage-nav-btn stage-nav-prev"
+					title="Previous page (Left Arrow)"
+					aria-label="Previous page"
+					hx-get="/posts/{{ .PrevGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
+					hx-target="#post-detail"
+					hx-select="#post-detail"
+					hx-swap="outerHTML show:none"
+				><span class="material-symbols-rounded" aria-hidden="true">chevron_left</span></a>
+				{{ end }}
+				{{ if .NextGroupPostID }}
+				<a
+					href="/posts/{{ .NextGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
+					id="post-group-next"
+					class="stage-nav-btn stage-nav-next"
+					title="Next page (Right Arrow)"
+					aria-label="Next page"
+					hx-get="/posts/{{ .NextGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
+					hx-target="#post-detail"
+					hx-select="#post-detail"
+					hx-swap="outerHTML show:none"
+				><span class="material-symbols-rounded" aria-hidden="true">chevron_right</span></a>
+				{{ end }}
+				{{ end }}
+
 				<div class="media-wrap">
 					{{ if isVideoExt .Post.FileExt }}
 					<video
@@ -91,16 +120,16 @@
 						class="detail-media"
 					></video>
 					{{ else }}
-					<div class="progressive-media-container lb-progressive-container" style="--media-ar: {{ .Post.Width }} / {{ .Post.Height }};">
+					<div class="progressive-media-container" style="--media-ar: {{ .Post.Width }} / {{ .Post.Height }};">
 						<img
-							class="img-preview lb-img-preview"
+							class="img-preview"
 							src="{{ if .Post.SampleURL }}{{ .Post.SampleURL }}{{ else }}{{ .Post.PreviewURL }}{{ end }}"
 							alt="Post #{{ .Post.ID }}"
 							referrerpolicy="no-referrer"
 						/>
-						<div class="media-loader lb-loader" aria-hidden="true"></div>
+						<div class="media-loader" aria-hidden="true"></div>
 						<img
-							class="img-full lb-img-full"
+							class="img-full"
 							src="{{ .Post.FileURL }}"
 							alt="Post #{{ .Post.ID }}"
 							referrerpolicy="no-referrer"
@@ -112,10 +141,10 @@
 
 			<div class="post-detail-actions">
 				{{ if not (isVideoExt .Post.FileExt) }}
-				<button type="button" id="detail-zoom-toggle" class="page-btn" title="Toggle Zoom (or click on image)">Fit</button>
+				<button type="button" id="post-zoom-btn" class="page-btn" title="Toggle Zoom (or click on image)">Fit</button>
 				{{ end }}
 				{{ if and .Post.SampleURL (ne .Post.SampleURL .Post.FileURL) (not (isAnimatedExt .Post.FileExt)) }}
-				<button type="button" id="detail-hd-toggle" class="page-btn" title="Toggle original HD resolution">Sample</button>
+				<button type="button" id="post-hd-toggle" class="page-btn" title="Toggle original HD resolution">Sample</button>
 				{{ end }}
 				<a href="{{ .Post.FileURL }}" target="_blank" rel="noopener noreferrer" class="page-btn">
 					Original ({{ .Post.Width }}×{{ .Post.Height }} {{ upper .Post.FileExt }}) ↗
@@ -126,57 +155,81 @@
 			</div>
 		</div>
 
-		<aside class="post-sidebar">
-			<div class="sidebar-card">
-				<h2>Post #{{ .Post.ID }}</h2>
-				<dl class="meta-list">
-					<div>
-						<dt>Score</dt>
-						<dd><strong>★ {{ .Post.Score }}</strong></dd>
-					</div>
-					<div>
-						<dt>
-							<span class="has-tooltip" data-tooltip="Popularity score combines recent upvote velocity with total score and age decay." tabindex="0" role="button" aria-label="Popularity score description">Popularity Score</span>
-						</dt>
-						<dd>
-							<span class="detail-velocity" title="Popularity Score: {{ hotCount .Post.HotScore }}">
-								<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
-								<strong>{{ hotCount .Post.HotScore }}</strong>
-							</span>
-						</dd>
-					</div>
-					<div>
-						<dt>Uploaded</dt>
-						<dd title="{{ .Post.CreatedAt }}">{{ timeAgo .Post.CreatedAt }} ({{ .Post.CreatedAt.Format "2006-01-02 15:04 UTC" }})</dd>
-					</div>
-					<div>
-						<dt>Rating</dt>
-						<dd>{{ .Post.Rating.Label }}</dd>
-					</div>
-					<div>
-						<dt>Dimensions</dt>
-						<dd>{{ .Post.Width }} × {{ .Post.Height }} ({{ upper .Post.FileExt }})</dd>
-					</div>
-					{{ if .Post.Source }}
-					<div>
-						<dt>Source</dt>
-						<dd class="truncate"><a href="{{ .Post.Source }}" target="_blank" rel="noopener noreferrer">{{ .Post.Source }}</a></dd>
-					</div>
+		<aside class="post-sidebar" id="post-sidebar">
+			<div class="sheet-handle-zone" id="sheet-handle-zone" role="button" tabindex="0" aria-expanded="false" aria-label="Toggle post details">
+				<div class="sheet-pill-handle" aria-hidden="true"></div>
+				<div class="sheet-summary-row">
+					<span class="sheet-id">Post #{{ .Post.ID }}</span>
+					<span class="badge">★ {{ .Post.Score }}</span>
+					<span class="detail-velocity" title="Popularity Score: {{ hotCount .Post.HotScore }}">
+						<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
+						<strong>{{ hotCount .Post.HotScore }}</strong>
+					</span>
+					<span class="badge rating-badge">{{ .Post.Rating.Label }}</span>
+					{{ if gt (len .GroupPosts) 1 }}
+					<span class="badge badge-pages">
+						<span class="material-symbols-rounded" aria-hidden="true">filter_none</span>
+						<span>{{ .GroupPageIndex }}/{{ len .GroupPosts }}</span>
+					</span>
 					{{ end }}
-				</dl>
+					<span class="material-symbols-rounded sheet-chevron" aria-hidden="true">expand_less</span>
+				</div>
 			</div>
 
-			<div class="sidebar-card">
-				<h3>Tags ({{ len .Post.Tags }})</h3>
-				<div class="tag-cloud">
-					{{ range .Post.Tags }}
-					<a href="/?tags={{ . }}" class="tag-chip">
-						<span>{{ . }}</span>
-					</a>
-					{{ end }}
+			<div class="sheet-body">
+				<div class="sidebar-card">
+					<h2>Post #{{ .Post.ID }}</h2>
+					<dl class="meta-list">
+						<div>
+							<dt>Score</dt>
+							<dd><strong>★ {{ .Post.Score }}</strong></dd>
+						</div>
+						<div>
+							<dt>
+								<span class="has-tooltip" data-tooltip="Popularity score combines recent upvote velocity with total score and age decay." tabindex="0" role="button" aria-label="Popularity score description">Popularity Score</span>
+							</dt>
+							<dd>
+								<span class="detail-velocity" title="Popularity Score: {{ hotCount .Post.HotScore }}">
+									<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
+									<strong>{{ hotCount .Post.HotScore }}</strong>
+								</span>
+							</dd>
+						</div>
+						<div>
+							<dt>Uploaded</dt>
+							<dd title="{{ .Post.CreatedAt }}">{{ timeAgo .Post.CreatedAt }} ({{ .Post.CreatedAt.Format "2006-01-02 15:04 UTC" }})</dd>
+						</div>
+						<div>
+							<dt>Rating</dt>
+							<dd>{{ .Post.Rating.Label }}</dd>
+						</div>
+						<div>
+							<dt>Dimensions</dt>
+							<dd>{{ .Post.Width }} × {{ .Post.Height }} ({{ upper .Post.FileExt }})</dd>
+						</div>
+						{{ if .Post.Source }}
+						<div>
+							<dt>Source</dt>
+							<dd class="truncate"><a href="{{ .Post.Source }}" target="_blank" rel="noopener noreferrer">{{ .Post.Source }}</a></dd>
+						</div>
+						{{ end }}
+					</dl>
+				</div>
+
+				<div class="sidebar-card">
+					<h3>Tags ({{ len .Post.Tags }})</h3>
+					<div class="tag-cloud">
+						{{ range .Post.Tags }}
+						<a href="/?tags={{ . }}" class="tag-chip">
+							<span>{{ . }}</span>
+						</a>
+						{{ end }}
+					</div>
 				</div>
 			</div>
 		</aside>
+
+		<div class="sheet-backdrop" id="sheet-backdrop" aria-hidden="true"></div>
 	</div>
 </div>
 {{ end }}
