@@ -676,37 +676,258 @@ func TestBenchmark100kPosts(t *testing.T) {
 
 func TestOpenCorruptedDatabaseBackup(t *testing.T) {
 	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "corrupted.db")
 
-	garbage := []byte("not a valid sqlite database garbage content")
-	if err := os.WriteFile(dbPath, garbage, 0644); err != nil {
-		t.Fatalf("writing garbage file: %v", err)
+	t.Run("header_garbage", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "corrupted.db")
+
+		garbage := []byte("not a valid sqlite database garbage content")
+		if err := os.WriteFile(dbPath, garbage, 0644); err != nil {
+			t.Fatalf("writing garbage file: %v", err)
+		}
+
+		store, err := Open(ctx, dbPath)
+		if err != nil {
+			t.Fatalf("Open failed to recover corrupted database: %v", err)
+		}
+		defer store.Close()
+
+		// Verify .bak exists and has original garbage
+		bakPath := dbPath + ".bak"
+		bakBytes, err := os.ReadFile(bakPath)
+		if err != nil {
+			t.Fatalf("expected .bak file to exist at %s: %v", bakPath, err)
+		}
+		if !bytes.Equal(bakBytes, garbage) {
+			t.Errorf("expected .bak to contain garbage bytes, got: %s", string(bakBytes))
+		}
+
+		// Verify new store is working properly
+		stats, err := store.Stats(ctx)
+		if err != nil {
+			t.Fatalf("Store Stats failed on recreated db: %v", err)
+		}
+		if stats.TotalPosts != 0 {
+			t.Errorf("expected 0 posts on fresh database, got %d", stats.TotalPosts)
+		}
+	})
+
+	t.Run("mid_file_corruption", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "mid_corrupt.db")
+
+		// 1. Create a populated multi-page database
+		store, err := Open(ctx, dbPath)
+		if err != nil {
+			t.Fatalf("initial open failed: %v", err)
+		}
+		var posts []hypnohub.Post
+		now := time.Now().UTC()
+		for i := 1; i <= 60; i++ {
+			posts = append(posts, hypnohub.Post{
+				ID:         hypnohub.PostID(i),
+				CreatedAt:  hypnohub.Date(now.Add(time.Duration(i) * time.Minute)),
+				Score:      i * 5,
+				Rating:     hypnohub.RatingExplicit,
+				Tags:       "test tag multi page",
+				FileURL:    fmt.Sprintf("https://hypnohub.net/%d.jpg", i),
+				SampleURL:  fmt.Sprintf("https://hypnohub.net/%d.jpg", i),
+				PreviewURL: fmt.Sprintf("https://hypnohub.net/%d.jpg", i),
+				Width:      800,
+				Height:     600,
+				Status:     "active",
+			})
+		}
+		if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+			t.Fatalf("ingest batch failed: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store failed: %v", err)
+		}
+
+		// 2. Overwrite bytes in the middle of the database file
+		dbBytes, err := os.ReadFile(dbPath)
+		if err != nil {
+			t.Fatalf("reading db file: %v", err)
+		}
+		if len(dbBytes) < 4096 {
+			t.Fatalf("db file too small for mid-file corruption: %d bytes", len(dbBytes))
+		}
+		corruptedBytes := make([]byte, len(dbBytes))
+		copy(corruptedBytes, dbBytes)
+		// Overwrite bytes starting at page 2 (offset 4096), preserving the SQLite file header on page 1
+		copy(corruptedBytes[4096:4096+256], bytes.Repeat([]byte{0xFF}, 256))
+		if err := os.WriteFile(dbPath, corruptedBytes, 0644); err != nil {
+			t.Fatalf("writing corrupted db: %v", err)
+		}
+
+		// 3. Open corrupted database; should detect quick_check failure, backup to .bak, and recreate
+		recoveredStore, err := Open(ctx, dbPath)
+		if err != nil {
+			t.Fatalf("Open failed to recover mid-file corrupted database: %v", err)
+		}
+		defer recoveredStore.Close()
+
+		bakPath := dbPath + ".bak"
+		bakBytes, err := os.ReadFile(bakPath)
+		if err != nil {
+			t.Fatalf("expected .bak file at %s: %v", bakPath, err)
+		}
+		if !bytes.Equal(bakBytes, corruptedBytes) {
+			t.Errorf("expected .bak to match corrupted file bytes")
+		}
+
+		stats, err := recoveredStore.Stats(ctx)
+		if err != nil {
+			t.Fatalf("Stats failed on recreated db: %v", err)
+		}
+		if stats.TotalPosts != 0 {
+			t.Errorf("expected 0 posts on fresh database, got %d", stats.TotalPosts)
+		}
+	})
+}
+
+func TestPostGroupStatusTransitions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, store *Store)
+	}{
+		{
+			name: "standalone_flagged_to_active",
+			run: func(t *testing.T, store *Store) {
+				now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+				p500 := hypnohub.Post{
+					ID:        500,
+					Score:     50,
+					Rating:    hypnohub.RatingExplicit,
+					Tags:      "solo",
+					FileURL:   "https://hypnohub.net/500.jpg",
+					SampleURL: "https://hypnohub.net/500.jpg",
+					Width:     1000,
+					Height:    1000,
+					CreatedAt: hypnohub.Date(now),
+					ChangedAt: hypnohub.UnixTime(now.Unix()),
+					Status:    "flagged",
+				}
+				if _, err := store.IngestBatch(ctx, []hypnohub.Post{p500}, now, now, now, 1, false); err != nil {
+					t.Fatalf("ingest flagged: %v", err)
+				}
+
+				// Re-ingest as active
+				p500.Status = "active"
+				if _, err := store.IngestBatch(ctx, []hypnohub.Post{p500}, now, now, now, 1, false); err != nil {
+					t.Fatalf("ingest active: %v", err)
+				}
+
+				res, err := store.QueryPosts(ctx, QueryOptions{
+					CollapseGroups: true,
+					Limit:          10,
+				})
+				if err != nil {
+					t.Fatalf("query posts: %v", err)
+				}
+				if res.Total != 1 {
+					t.Fatalf("expected Total == 1, got %d", res.Total)
+				}
+				if len(res.Posts) != 1 {
+					t.Fatalf("expected 1 post, got %d", len(res.Posts))
+				}
+				if res.Posts[0].ID != 500 {
+					t.Errorf("expected post 500, got %d", res.Posts[0].ID)
+				}
+				if !res.Posts[0].GroupIsLatest {
+					t.Errorf("expected post 500 to have GroupIsLatest == true")
+				}
+			},
+		},
+		{
+			name: "children_active_parent_flagged_to_active",
+			run: func(t *testing.T, store *Store) {
+				now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+				posts := []hypnohub.Post{
+					{
+						ID:          100,
+						Score:       10,
+						Rating:      hypnohub.RatingExplicit,
+						Tags:        "comic series",
+						FileURL:     "https://hypnohub.net/100.jpg",
+						SampleURL:   "https://hypnohub.net/100.jpg",
+						Width:       1000,
+						Height:      1000,
+						CreatedAt:   hypnohub.Date(now.Add(-2 * time.Hour)),
+						ChangedAt:   hypnohub.UnixTime(now.Add(-2 * time.Hour).Unix()),
+						HasChildren: false,
+						Status:      "flagged",
+					},
+					{
+						ID:          101,
+						ParentID:    100,
+						Score:       20,
+						Rating:      hypnohub.RatingExplicit,
+						Tags:        "comic series",
+						FileURL:     "https://hypnohub.net/101.jpg",
+						SampleURL:   "https://hypnohub.net/101.jpg",
+						Width:       1000,
+						Height:      1000,
+						CreatedAt:   hypnohub.Date(now.Add(-1 * time.Hour)),
+						ChangedAt:   hypnohub.UnixTime(now.Add(-1 * time.Hour).Unix()),
+						HasChildren: true,
+						Status:      "active",
+					},
+					{
+						ID:        102,
+						ParentID:  100,
+						Score:     30,
+						Rating:    hypnohub.RatingExplicit,
+						Tags:      "comic series",
+						FileURL:   "https://hypnohub.net/102.jpg",
+						SampleURL: "https://hypnohub.net/102.jpg",
+						Width:     1000,
+						Height:    1000,
+						CreatedAt: hypnohub.Date(now),
+						ChangedAt: hypnohub.UnixTime(now.Unix()),
+						Status:    "active",
+					},
+				}
+				if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+					t.Fatalf("initial ingest: %v", err)
+				}
+
+				// Re-ingest parent 100 as active
+				parent := posts[0]
+				parent.Status = "active"
+				if _, err := store.IngestBatch(ctx, []hypnohub.Post{parent}, now, now, now, 1, false); err != nil {
+					t.Fatalf("re-ingest parent as active: %v", err)
+				}
+
+				for _, id := range []hypnohub.PostID{100, 101, 102} {
+					p, _, err := store.GetPost(ctx, id)
+					if err != nil {
+						t.Fatalf("getting post %d: %v", id, err)
+					}
+					if p.GroupID != 100 {
+						t.Errorf("post %d: expected GroupID == 100, got %d", id, p.GroupID)
+					}
+					if p.GroupPageCount != 3 {
+						t.Errorf("post %d: expected GroupPageCount == 3, got %d", id, p.GroupPageCount)
+					}
+				}
+			},
+		},
 	}
 
-	store, err := Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("Open failed to recover corrupted database: %v", err)
-	}
-	defer store.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := Open(ctx, ":memory:")
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer store.Close()
 
-	// Verify .bak exists and has original garbage
-	bakPath := dbPath + ".bak"
-	bakBytes, err := os.ReadFile(bakPath)
-	if err != nil {
-		t.Fatalf("expected .bak file to exist at %s: %v", bakPath, err)
-	}
-	if !bytes.Equal(bakBytes, garbage) {
-		t.Errorf("expected .bak to contain garbage bytes, got: %s", string(bakBytes))
-	}
-
-	// Verify new store is working properly
-	stats, err := store.Stats(ctx)
-	if err != nil {
-		t.Fatalf("Store Stats failed on recreated db: %v", err)
-	}
-	if stats.TotalPosts != 0 {
-		t.Errorf("expected 0 posts on fresh database, got %d", stats.TotalPosts)
+			tt.run(t, store)
+		})
 	}
 }
 

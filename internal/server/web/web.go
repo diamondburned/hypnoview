@@ -970,14 +970,9 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	ogDesc := fmt.Sprintf("★ %d · %d×%d %s · Tags: %s", post.Score, post.Width, post.Height, strings.ToUpper(post.FileExt), strings.Join(tagsList, ", "))
 
-	ogImg := post.FileURL
-	ogW := post.Width
-	ogH := post.Height
-	if isVid {
-		ogImg = thumbURL(*post)
-		ogW = thumbWidth(*post)
-		ogH = thumbHeight(*post)
-	}
+	ogImg := thumbURL(*post)
+	ogW := thumbWidth(*post)
+	ogH := thumbHeight(*post)
 
 	postOG := OpenGraph{
 		Title:       fmt.Sprintf("Post #%d (★ %d) — hypnogaze", post.ID, post.Score),

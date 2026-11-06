@@ -832,30 +832,22 @@ function createZoomableMediaViewer(options) {
 		const sh = stage.clientHeight;
 		const ar = postW / postH;
 
-		const isLightbox = stage.id === "lightbox-stage" || stage.classList.contains("lightbox-stage");
 		const zoomMode = currentSettings.zoomMode || "fill-width";
-		const maxWidthCap = isLightbox ? Math.max(sw, postW) : Math.min(sw, 1000);
+		const maxWidthCap = Math.min(sw, 1000);
 
 		let computedW;
 		if (zoomMode === "original") {
-			computedW = isLightbox ? postW : Math.min(postW, maxWidthCap);
+			computedW = Math.min(postW, maxWidthCap);
 		} else if (zoomMode === "2x") {
-			computedW = isLightbox ? Math.round(r.width * 2) : Math.min(Math.round(r.width * 2), maxWidthCap);
+			computedW = Math.min(Math.round(r.width * 2), maxWidthCap);
 		} else if (zoomMode === "3x") {
-			computedW = isLightbox ? Math.round(r.width * 3) : Math.min(Math.round(r.width * 3), maxWidthCap);
+			computedW = Math.min(Math.round(r.width * 3), maxWidthCap);
 		} else {
 			// "fill-width" default: fills stage width (or at least capped container on detail)
-			computedW = isLightbox ? sw : maxWidthCap;
+			computedW = maxWidthCap;
 		}
 
-		// Ensure clicking to zoom never shrinks an already-large image
-		const effectiveMax = isLightbox ? sw : maxWidthCap;
-		if (computedW <= r.width && effectiveMax > r.width) {
-			computedW = effectiveMax;
-		}
-		if (computedW < r.width) {
-			computedW = r.width;
-		}
+		if (computedW <= r.width + 1) return; // already at or above target width; don't enter a no-op zoom state
 
 		targetW = Math.round(computedW);
 		targetH = Math.round(targetW / ar);
@@ -952,8 +944,7 @@ function createZoomableMediaViewer(options) {
 			const r = getRenderedMediaRect(stage, activeImg, postW, postH);
 			const sw = stage.clientWidth;
 			const ar = postW / postH;
-			const isLightbox = stage.id === "lightbox-stage" || stage.classList.contains("lightbox-stage");
-			const maxWidthCap = isLightbox ? Math.max(sw * 3, postW * 3) : Math.min(sw, 1000);
+			const maxWidthCap = Math.min(sw, 1000);
 
 			const baseW = isZoomed && targetW > 0 ? (targetW / currentZoomScale) : r.width;
 			let newScale = (isZoomed ? currentZoomScale : 1) + delta;

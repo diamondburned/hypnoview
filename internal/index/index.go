@@ -25,6 +25,10 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+var (
+	errIntegrityCheckFailed = errors.New("sqlite integrity check failed")
+)
+
 // isCorruptError returns true only when the error represents a genuine unrecoverable
 // corruption of the SQLite database disk image, not transient lock or context errors.
 func isCorruptError(err error) bool {
@@ -38,7 +42,7 @@ func isCorruptError(err error) bool {
 			return true
 		}
 	}
-	return false
+	return errors.Is(err, errIntegrityCheckFailed)
 }
 
 var (
@@ -243,10 +247,14 @@ func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
 		return nil, fmt.Errorf("migrating sqlite schema: %w", err)
 	}
 
-	var schemaCount int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema;").Scan(&schemaCount); err != nil {
+	var checkResult string
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check(1);").Scan(&checkResult); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("reading sqlite schema: %w", err)
+		return nil, fmt.Errorf("running quick_check: %w", err)
+	}
+	if checkResult != "ok" {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %s", errIntegrityCheckFailed, checkResult)
 	}
 
 	return &Store{
@@ -345,6 +353,7 @@ type Stats struct {
 type prevPostState struct {
 	parentID hypnohub.PostID
 	groupID  hypnohub.PostID
+	status   PostStatus
 }
 
 // IngestBatch upserts a batch of posts and records their score snapshots for pollTime.
@@ -385,7 +394,7 @@ func (s *Store) IngestBatch(
 		end := min(len(batchIDs), i+500)
 		chunk := batchIDs[i:end]
 		sb := sqlbuilder.SQLite.NewSelectBuilder()
-		sb.Select("id", "parent_id", "group_id").
+		sb.Select("id", "parent_id", "group_id", "status").
 			From("posts").
 			Where(sb.In("id", sqlbuilder.Flatten(chunk)...))
 		q, args := sb.Build()
@@ -395,13 +404,15 @@ func (s *Store) IngestBatch(
 		}
 		for rows.Next() {
 			var id, pid, gid int64
-			if err := rows.Scan(&id, &pid, &gid); err != nil {
+			var st string
+			if err := rows.Scan(&id, &pid, &gid, &st); err != nil {
 				rows.Close()
 				return 0, fmt.Errorf("scanning previous post state: %w", err)
 			}
 			prevPostMap[hypnohub.PostID(id)] = prevPostState{
 				parentID: hypnohub.PostID(pid),
 				groupID:  hypnohub.PostID(gid),
+				status:   PostStatus(st),
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -416,8 +427,13 @@ func (s *Store) IngestBatch(
 			continue
 		}
 
+		status := PostStatus(p.Status)
+		if status == "" {
+			status = StatusActive
+		}
+
 		prev, existed := prevPostMap[p.ID]
-		if !existed || p.ParentID > 0 || p.HasChildren || prev.parentID > 0 || prev.groupID > 0 {
+		if !existed || status != prev.status || p.ParentID > 0 || p.HasChildren || prev.parentID > 0 || prev.groupID > 0 {
 			affectedGroupIDs[p.ID] = struct{}{}
 			if p.ParentID > 0 {
 				affectedGroupIDs[p.ParentID] = struct{}{}
@@ -433,10 +449,6 @@ func (s *Store) IngestBatch(
 		tagsSlice := p.Tags.Split()
 		tagsRaw := strings.Join(tagsSlice, " ")
 		rating := string(p.Rating.Normalize())
-		status := p.Status
-		if status == "" {
-			status = "active"
-		}
 
 		createdAt := p.CreatedAt.Time().UTC().Unix()
 		changedAt := int64(p.ChangedAt)
@@ -454,10 +466,10 @@ func (s *Store) IngestBatch(
 			ParentID:      int64(p.ParentID),
 			MD5:           p.MD5,
 			Source:        p.Source,
-			Status:        status,
-			HasNotes:      int64(boolToInt(p.HasNotes == "true")),
-			HasComments:   int64(boolToInt(p.HasComments == "true")),
-			HasChildren:   int64(boolToInt(p.HasChildren)),
+			Status:        string(status),
+			HasNotes:      boolToInt(p.HasNotes == "true"),
+			HasComments:   boolToInt(p.HasComments == "true"),
+			HasChildren:   boolToInt(p.HasChildren),
 			FileURL:       p.FileURL,
 			FileExt:       p.FileExt(),
 			Width:         int64(p.Width),
@@ -546,7 +558,7 @@ func (s *Store) IngestBatch(
 		CompletedAt:   completedAt.UTC().Unix(),
 		PostsUpserted: int64(upserted),
 		PagesFetched:  int64(pagesFetched),
-		IsSeed:        int64(boolToInt(isSeed)),
+		IsSeed:        boolToInt(isSeed),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("recording poll run: %w", err)
@@ -577,7 +589,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 		id       hypnohub.PostID
 		parentID hypnohub.PostID
 		groupID  hypnohub.PostID
-		status   string
+		status   PostStatus
 	}
 
 	allNodes := make(map[hypnohub.PostID]postNode)
@@ -589,21 +601,17 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 		for i := 0; i < len(batch); i += 500 {
 			end := min(len(batch), i+500)
 			chunk := batch[i:end]
-			flatChunk := make([]any, len(chunk))
-			for j, id := range chunk {
-				flatChunk[j] = int64(id)
-			}
 
 			sb := sqlbuilder.SQLite.NewSelectBuilder()
 			sb.Select("id", "parent_id", "group_id", "status").
 				From("posts").
 				Where(
 					sb.Or(
-						sb.In("id", flatChunk...),
-						sb.In("parent_id", flatChunk...),
+						sb.In("id", sqlbuilder.Flatten(chunk)...),
+						sb.In("parent_id", sqlbuilder.Flatten(chunk)...),
 						sb.And(
 							sb.GreaterThan("group_id", 0),
-							sb.In("group_id", flatChunk...),
+							sb.In("group_id", sqlbuilder.Flatten(chunk)...),
 						),
 					),
 				)
@@ -625,7 +633,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 					id:       hypnohub.PostID(id),
 					parentID: hypnohub.PostID(pid),
 					groupID:  hypnohub.PostID(gid),
-					status:   status,
+					status:   PostStatus(status),
 				}
 				allNodes[n.id] = n
 
@@ -652,9 +660,9 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 	// Build undirected adjacency graph. Active posts link to parent_id if parent is active or unindexed.
 	adj := make(map[hypnohub.PostID][]hypnohub.PostID, len(allNodes))
 	for id, n := range allNodes {
-		if n.status == "active" && n.parentID > 0 && n.parentID != id {
+		if n.status == StatusActive && n.parentID > 0 && n.parentID != id {
 			parent, inNodes := allNodes[n.parentID]
-			if !inNodes || parent.status == "active" {
+			if !inNodes || parent.status == StatusActive {
 				adj[id] = append(adj[id], n.parentID)
 				adj[n.parentID] = append(adj[n.parentID], id)
 			}
@@ -665,7 +673,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 
 	// Reset any non-active posts in allNodes to group_id = 0, group_page_count = 1, group_is_latest = 0
 	for id, n := range allNodes {
-		if n.status != "active" {
+		if n.status != StatusActive {
 			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
 				GroupID:        0,
 				GroupPageCount: 1,
@@ -681,7 +689,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 	visitedComp := make(map[hypnohub.PostID]bool, len(allNodes))
 
 	for id, n := range allNodes {
-		if n.status != "active" || visitedComp[id] {
+		if n.status != StatusActive || visitedComp[id] {
 			continue
 		}
 
@@ -705,7 +713,7 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []hypnohub.Pos
 		// Filter connected component to active posts that exist in allNodes
 		var activeComp []hypnohub.PostID
 		for _, pid := range comp {
-			if node, ok := allNodes[pid]; ok && node.status == "active" {
+			if node, ok := allNodes[pid]; ok && node.status == StatusActive {
 				activeComp = append(activeComp, pid)
 			}
 		}
@@ -776,9 +784,7 @@ func NormalizeMediaType(m string) MediaType {
 type PostStatus string
 
 const (
-	StatusActive  PostStatus = "active"
-	StatusDeleted PostStatus = "deleted"
-	StatusFlagged PostStatus = "flagged"
+	StatusActive PostStatus = "active"
 )
 
 // QueryOptions configures a query against the local post index.
@@ -1073,9 +1079,8 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 
 // GetPost retrieves a single indexed post by ID along with its score history snapshots.
 func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, []ScorePoint, error) {
-	refNow := s.latestReferenceTime(ctx).UTC()
-	nowUnix := refNow.Unix()
-	const tau = 2.0
+	now := time.Now().UTC()
+	tau := WindowDay.DampingHours()
 
 	postRow, err := s.q.GetPostByID(ctx, int64(id))
 	if err != nil {
@@ -1090,15 +1095,16 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		return nil, nil, fmt.Errorf("getting snapshots for post %d: %w", id, err)
 	}
 
-	post := postToIndexed(postRow, nowUnix, tau)
+	post := postToIndexed(postRow, now, tau)
 
-	// Compute HotScore using the 24h window (Window24h, matching /popular)
-	windowStartUnix := nowUnix - int64(24*time.Hour/time.Second)
+	// Compute HotScore using the 24h window (WindowDay, matching /popular)
+	windowStart := now.Add(-24 * time.Hour)
+	windowStartUnix := windowStart.Unix()
+	nowUnix := now.Unix()
 	if postRow.CreatedAt >= windowStartUnix {
 		// Created within the 24h window: full score is delta
 		effHours := max(0.1, float64(nowUnix-postRow.CreatedAt)/3600.0)
-		scoreRate := float64(postRow.Score) / (effHours + tau)
-		hotScore := scoreRate * math.Pow(float64(max(1, postRow.Score)), 0.35)
+		scoreRate, hotScore := hotMetrics(postRow.Score, postRow.Score, effHours, tau)
 		post.BaselineScore = 0
 		post.ScoreDelta = int(postRow.Score)
 		post.WindowHours = math.Round(effHours*100) / 100
@@ -1114,8 +1120,7 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 			startTime := snapRows[idx].PollTime
 			delta := max(0, postRow.Score-startScore)
 			effHours := max(0.1, float64(nowUnix-startTime)/3600.0)
-			scoreRate := float64(delta) / (effHours + tau)
-			hotScore := scoreRate * math.Pow(float64(max(1, postRow.Score)), 0.35)
+			scoreRate, hotScore := hotMetrics(delta, postRow.Score, effHours, tau)
 			post.BaselineScore = int(startScore)
 			post.ScoreDelta = int(delta)
 			post.WindowHours = math.Round(effHours*100) / 100
@@ -1154,9 +1159,8 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 	if groupID <= 0 {
 		return nil, nil
 	}
-	refNow := s.latestReferenceTime(ctx).UTC()
-	nowUnix := refNow.Unix()
-	const tau = 2.0
+	now := time.Now().UTC()
+	tau := WindowDay.DampingHours()
 
 	posts, err := s.q.ListGroupPosts(ctx, int64(groupID))
 	if err != nil {
@@ -1165,7 +1169,7 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 
 	result := make([]IndexedPost, len(posts))
 	for i, p := range posts {
-		result[i] = postToIndexed(p, nowUnix, tau)
+		result[i] = postToIndexed(p, now, tau)
 	}
 	return result, nil
 }
@@ -1284,10 +1288,15 @@ func (s *Store) latestReferenceTime(ctx context.Context) time.Time {
 	return time.Now().UTC()
 }
 
-func postToIndexed(p sqlcgen.Post, nowUnix int64, tau float64) IndexedPost {
-	effHours := max(0.1, float64(nowUnix-p.CreatedAt)/3600.0)
-	scoreRate := float64(p.Score) / (effHours + tau)
-	hotScore := scoreRate * math.Pow(float64(max(1, p.Score)), 0.35)
+func hotMetrics(delta, score int64, effHours, tau float64) (rate, hot float64) {
+	rate = float64(delta) / (effHours + tau)
+	hot = rate * math.Pow(float64(max(1, score)), hotScoreMomentumExp)
+	return rate, hot
+}
+
+func postToIndexed(p sqlcgen.Post, now time.Time, tau float64) IndexedPost {
+	effHours := max(0.1, float64(now.Unix()-p.CreatedAt)/3600.0)
+	scoreRate, hotScore := hotMetrics(p.Score, p.Score, effHours, tau)
 
 	return IndexedPost{
 		ID:             hypnohub.PostID(p.ID),
@@ -1327,11 +1336,7 @@ func postToIndexed(p sqlcgen.Post, nowUnix int64, tau float64) IndexedPost {
 	}
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanIndexedPost(scanner rowScanner) (IndexedPost, error) {
+func scanIndexedPost(scanner *sql.Rows) (IndexedPost, error) {
 	var (
 		p                                       IndexedPost
 		id, parentID                            int
@@ -1391,7 +1396,7 @@ func cleanTagList(tags []string) []string {
 	return out
 }
 
-func boolToInt(b bool) int {
+func boolToInt(b bool) int64 {
 	if b {
 		return 1
 	}
