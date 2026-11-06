@@ -167,12 +167,12 @@ func TestClientPostViewTagsAndTagByName(t *testing.T) {
 	client := FromHTTPClient(ts.Client())
 	client.BaseURL = ts.URL
 
-	tags, err := client.PostViewTags(context.Background(), 287547)
+	tags, _, err := client.PostView(context.Background(), 287547)
 	if err != nil {
-		t.Fatalf("PostViewTags failed: %v", err)
+		t.Fatalf("PostView failed: %v", err)
 	}
 	if tags["bleach"] != TagTypeCopyright || tags["orihime_inoue"] != TagTypeCharacter {
-		t.Errorf("unexpected PostViewTags: %v", tags)
+		t.Errorf("unexpected PostView tags: %v", tags)
 	}
 
 	tag, err := client.TagByName(context.Background(), "bleach")
@@ -225,7 +225,7 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 	if len(single) != 1 {
 		t.Fatalf("ParsePostViewComments single len = %d, want 1", len(single))
 	}
-	if single[0].ID != 626853 || single[0].PostID != 287540 || single[0].Creator != "Bootyhunter69" || single[0].CreatorID != 65769 || single[0].CreatedAt != "2026-11-05 21:41:10" || single[0].Score != 1 || single[0].Body != "Aww, how... romantic(?)" {
+	if single[0].ID != 626853 || single[0].PostID != 287540 || single[0].Creator != "Bootyhunter69" || single[0].CreatorID != 65769 || single[0].CreatedAt.RFC3339() != "2026-11-05T21:41:10Z" || single[0].CreatedAt.FormatComment() != "2026-11-05 21:41" || single[0].Score != 1 || single[0].Body != "Aww, how... romantic(?)" {
 		t.Errorf("unexpected parsed single comment: %+v", single[0])
 	}
 
@@ -273,11 +273,17 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 			</div>
 			<hr class="light"/>
 		</div>
+		<div id="c626845">
+			<div class="horizontalFlexWithMargins">
+				<div class="comment-left-col"></div>
+				<div class="comment-right-col"></div>
+			</div>
+		</div>
 	</div>`
 
 	multi := ParsePostViewComments(multiCommentHTML)
 	if len(multi) != 2 {
-		t.Fatalf("ParsePostViewComments multi len = %d, want 2", len(multi))
+		t.Fatalf("ParsePostViewComments multi len = %d, want 2 (empty comment must be skipped)", len(multi))
 	}
 	wantBody0 := "> First line\n> Second line\n\nCome on, don't provoke & test!\nLine two"
 	if multi[0].ID != 626842 || multi[0].Creator != "Hurricane" || multi[0].CreatorID != 1705818 || multi[0].Score != 2 || multi[0].Body != wantBody0 {
@@ -288,17 +294,22 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 		t.Errorf("unexpected multi[1]: %+v (wantBody=%q)", multi[1], wantBody1)
 	}
 
-	// Test Client.Comments HTML primary and CommentsDAPI fallback
+	if got := cleanCommentBody(`[quote]a &lt;b&gt; c[/quote]`); got != `> a <b> c` {
+		t.Errorf("cleanCommentBody([quote]a &lt;b&gt; c[/quote]) = %q, want %q", got, `> a <b> c`)
+	}
+	if got := cleanCommentBody(`[quote]1 &lt; 2<br />3 &gt; 2[/quote]`); got != "> 1 < 2\n> 3 > 2" {
+		t.Errorf("cleanCommentBody([quote]1 &lt; 2<br />3 &gt; 2[/quote]) = %q, want %q", got, "> 1 < 2\n> 3 > 2")
+	}
+	if got := cleanCommentBody(`[quote=Bob]Hello[/quote]`); got != "> Bob wrote:\n> Hello" {
+		t.Errorf("cleanCommentBody([quote=Bob]Hello[/quote]) = %q, want %q", got, "> Bob wrote:\n> Hello")
+	}
+
+	// Test Client.PostView HTML comments and Client.CommentsDAPI XML endpoint
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287540" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, singleCommentHTML)
-			return
-		}
-		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287999" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, `<div id="comment-list"></div>`)
 			return
 		}
 		if q.Get("page") == "dapi" && q.Get("s") == "comment" && q.Get("post_id") == "287999" {
@@ -313,12 +324,12 @@ func TestParsePostViewCommentsAndClientComments(t *testing.T) {
 	client := FromHTTPClient(ts.Client())
 	client.BaseURL = ts.URL
 
-	c1, err := client.Comments(context.Background(), 287540)
+	_, c1, err := client.PostView(context.Background(), 287540)
 	if err != nil || len(c1) != 1 || c1[0].Creator != "Bootyhunter69" {
-		t.Fatalf("client.Comments(287540) = (%+v, %v)", c1, err)
+		t.Fatalf("client.PostView(287540) = (%+v, %v)", c1, err)
 	}
-	c2, err := client.Comments(context.Background(), 287999)
-	if err != nil || len(c2) != 1 || c2[0].Creator != "FallbackUser" || c2[0].Body != "Fallback & clean" {
-		t.Fatalf("client.Comments(287999) DAPI fallback = (%+v, %v)", c2, err)
+	c2, err := client.CommentsDAPI(context.Background(), 287999)
+	if err != nil || len(c2) != 1 || c2[0].Creator != "FallbackUser" || c2[0].Body != "Fallback & clean" || c2[0].CreatedAt.FormatComment() != "2026-11-06 12:00" {
+		t.Fatalf("client.CommentsDAPI(287999) = (%+v, %v)", c2, err)
 	}
 }

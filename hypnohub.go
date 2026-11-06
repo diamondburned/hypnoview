@@ -63,18 +63,71 @@ type Post struct {
 // Date is a date from the hypnohub API.
 type Date time.Time
 
+var dateLayouts = []string{
+	"Mon Jan 2 15:04:05 -0700 2006",
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+}
+
+// ParseDate parses a date string using the layouts returned by Hypnohub XML and HTML endpoints.
+// An empty string returns the zero Date{}.
+func ParseDate(s string) (Date, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return Date{}, nil
+	}
+	for _, layout := range dateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return Date(t.UTC()), nil
+		}
+	}
+	return Date{}, fmt.Errorf("cannot parse date %q", s)
+}
+
 // Time returns the time.Time representation of the date.
 func (d Date) Time() time.Time {
 	return time.Time(d)
 }
 
+// IsZero reports whether d represents the zero time instant.
+func (d Date) IsZero() bool {
+	return time.Time(d).IsZero()
+}
+
+// UTC returns d as a time.Time with the location set to UTC.
+func (d Date) UTC() time.Time {
+	return time.Time(d).UTC()
+}
+
+// FormatComment returns d formatted as "2006-01-02 15:04" in UTC, or "" if zero.
+func (d Date) FormatComment() string {
+	if d.IsZero() {
+		return ""
+	}
+	return d.UTC().Format("2006-01-02 15:04")
+}
+
+// RFC3339 returns d formatted as time.RFC3339 in UTC, or "" if zero.
+func (d Date) RFC3339() string {
+	if d.IsZero() {
+		return ""
+	}
+	return d.UTC().Format(time.RFC3339)
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (d Date) MarshalText() ([]byte, error) {
+	return []byte(d.RFC3339()), nil
+}
+
 // UnmarshalText parses a text-encoded date from the hypnohub API.
 func (d *Date) UnmarshalText(b []byte) error {
-	t, err := time.Parse("Mon Jan 2 15:04:05 -0700 2006", string(b))
+	parsed, err := ParseDate(string(b))
 	if err != nil {
 		return err
 	}
-	*d = Date(t)
+	*d = parsed
 	return nil
 }
 
@@ -232,7 +285,7 @@ type Comment struct {
 	PostID    PostID    `xml:"post_id,attr" json:"post_id"`
 	Creator   string    `xml:"creator,attr" json:"creator"`
 	CreatorID int       `xml:"creator_id,attr" json:"creator_id,omitempty"`
-	CreatedAt string    `xml:"created_at,attr" json:"created_at"`
+	CreatedAt Date      `xml:"created_at,attr" json:"created_at"`
 	Score     int       `xml:"score,attr" json:"score,omitempty"`
 	Body      string    `xml:"body,attr" json:"body"`
 }
@@ -437,7 +490,7 @@ var (
 	commentBodyClassRe  = regexp.MustCompile(`(?is)<div[^>]*\bclass=["'][^"']*comment-body[^"']*["'][^>]*>(.*)`)
 	htmlBrTagRe         = regexp.MustCompile(`(?is)<br\s*/?>`)
 	htmlQuoteDivRe      = regexp.MustCompile(`(?is)<(?:div[^>]*\bclass=["'][^"']*\bquote\b[^"']*["'][^>]*|blockquote[^>]*?)>(.*?)</(?:div|blockquote)>`)
-	bbcodeQuoteRe       = regexp.MustCompile(`(?is)\[quote(?:=[^\]]*)?\](.*?)\[/quote\]`)
+	bbcodeQuoteRe       = regexp.MustCompile(`(?is)\[quote(?:=([^\]]*))?\](.*?)\[/quote\]`)
 )
 
 // PostView fetches a post's HTML view page and scrapes both categorized sidebar tags and post comments.
@@ -488,29 +541,6 @@ func (c *Client) PostView(ctx context.Context, postID PostID) (map[string]TagTyp
 	return tags, comments, nil
 }
 
-// PostViewTags fetches a post's HTML view page and scrapes tag categories from <ul id="tag-sidebar">.
-func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]TagType, error) {
-	tags, _, err := c.PostView(ctx, postID)
-	return tags, err
-}
-
-// Comments fetches comments for a post by scraping its HTML view page (which includes single-comment
-// posts, accurate timestamps, and scores) and falling back to the DAPI comment endpoint when empty.
-func (c *Client) Comments(ctx context.Context, postID PostID) ([]Comment, error) {
-	_, comments, err := c.PostView(ctx, postID)
-	if err != nil {
-		return nil, err
-	}
-	if len(comments) > 0 {
-		return comments, nil
-	}
-	dapiComments, dapiErr := c.CommentsDAPI(ctx, postID)
-	if dapiErr == nil && len(dapiComments) > 0 {
-		return dapiComments, nil
-	}
-	return comments, nil
-}
-
 // CommentsDAPI fetches comments for a post from the Gelbooru DAPI XML endpoint
 // (index.php?page=dapi&s=comment&q=index&post_id=<ID>).
 func (c *Client) CommentsDAPI(ctx context.Context, postID PostID) ([]Comment, error) {
@@ -535,9 +565,11 @@ func (c *Client) CommentsDAPI(ctx context.Context, postID PostID) ([]Comment, er
 			resp.Comments[i].PostID = postID
 		}
 		resp.Comments[i].Creator = strings.TrimSpace(html.UnescapeString(resp.Comments[i].Creator))
-		resp.Comments[i].CreatedAt = strings.TrimSpace(resp.Comments[i].CreatedAt)
 		resp.Comments[i].Body = cleanCommentBody(resp.Comments[i].Body)
 	}
+	resp.Comments = slices.DeleteFunc(resp.Comments, func(c Comment) bool {
+		return c.Creator == "" && c.Body == ""
+	})
 	slices.SortFunc(resp.Comments, func(a, b Comment) int {
 		return int(a.ID - b.ID)
 	})
@@ -627,7 +659,9 @@ func ParsePostViewComments(htmlBody string) []Comment {
 		}
 
 		if tm := commentPostedOnRe.FindStringSubmatch(block); len(tm) >= 2 {
-			c.CreatedAt = strings.Join(strings.Fields(tm[1]), " ")
+			if parsed, err := ParseDate(strings.Join(strings.Fields(tm[1]), " ")); err == nil {
+				c.CreatedAt = parsed
+			}
 		}
 
 		if sm := commentScoreSpanRe.FindStringSubmatch(block); len(sm) >= 2 {
@@ -655,6 +689,9 @@ func ParsePostViewComments(htmlBody string) []Comment {
 			rawBody = afterBody
 		}
 		c.Body = cleanCommentBody(rawBody)
+		if c.Creator == "" && c.Body == "" {
+			continue
+		}
 
 		comments = append(comments, c)
 	}
@@ -665,19 +702,24 @@ func ParsePostViewComments(htmlBody string) []Comment {
 	return comments
 }
 
-func formatQuoteBlock(inner string) string {
+func formatQuoteBlock(author, inner string) string {
 	inner = htmlBrTagRe.ReplaceAllString(inner, "\n")
-	inner = htmlTagStripRe.ReplaceAllString(inner, "")
-	inner = html.UnescapeString(inner)
 	inner = strings.ReplaceAll(inner, "\r\n", "\n")
 	inner = strings.ReplaceAll(inner, "\r", "\n")
+	author = strings.Trim(strings.TrimSpace(author), `"'`)
 	var quotedLines []string
-	for _, line := range strings.Split(strings.TrimSpace(inner), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			quotedLines = append(quotedLines, ">")
-		} else {
-			quotedLines = append(quotedLines, "> "+line)
+	if author != "" {
+		quotedLines = append(quotedLines, "> "+author+" wrote:")
+	}
+	trimmedInner := strings.TrimSpace(inner)
+	if trimmedInner != "" {
+		for _, line := range strings.Split(trimmedInner, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				quotedLines = append(quotedLines, ">")
+			} else {
+				quotedLines = append(quotedLines, "> "+line)
+			}
 		}
 	}
 	if len(quotedLines) == 0 {
@@ -695,14 +737,14 @@ func cleanCommentBody(raw string) string {
 		next := htmlQuoteDivRe.ReplaceAllStringFunc(s, func(m string) string {
 			sub := htmlQuoteDivRe.FindStringSubmatch(m)
 			if len(sub) >= 2 {
-				return formatQuoteBlock(sub[1])
+				return formatQuoteBlock("", sub[1])
 			}
 			return m
 		})
 		next = bbcodeQuoteRe.ReplaceAllStringFunc(next, func(m string) string {
 			sub := bbcodeQuoteRe.FindStringSubmatch(m)
-			if len(sub) >= 2 {
-				return formatQuoteBlock(sub[1])
+			if len(sub) >= 3 {
+				return formatQuoteBlock(sub[1], sub[2])
 			}
 			return m
 		})

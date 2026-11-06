@@ -1192,26 +1192,21 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		return nil, nil, fmt.Errorf("getting tags for post %d: %w", id, err)
 	}
 
-	var commentRows []sqlcgen.PostComment
-	if postRow.HasComments != 0 {
-		commentRows, err = s.q.GetPostComments(ctx, int64(id))
-		if err != nil {
-			return nil, nil, fmt.Errorf("getting comments for post %d: %w", id, err)
-		}
+	commentRows, err := s.q.GetPostComments(ctx, int64(id))
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting comments for post %d: %w", id, err)
 	}
 
-	needsComments := postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt, commentRows)
+	needsComments := postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt)
 	s.resolvePostView(ctx, id, tagRows, needsComments)
 
 	if reloaded, err := s.q.GetPostTagsWithCategory(ctx, int64(id)); err == nil {
 		tagRows = reloaded
 	}
-	if postRow.HasComments != 0 {
-		if reloadedComments, err := s.q.GetPostComments(ctx, int64(id)); err == nil {
-			commentRows = reloadedComments
-		}
-		post.Comments = postCommentsToHypnohub(commentRows)
+	if reloadedComments, err := s.q.GetPostComments(ctx, int64(id)); err == nil {
+		commentRows = reloadedComments
 	}
+	post.Comments = postCommentsToHypnohub(commentRows)
 
 	if len(tagRows) > 0 {
 		postTags := make([]PostTag, len(tagRows))
@@ -1321,16 +1316,13 @@ func (s *Store) GetPostComments(ctx context.Context, id hypnohub.PostID) ([]hypn
 		}
 		return nil, fmt.Errorf("getting post %d: %w", id, err)
 	}
-	if postRow.HasComments == 0 {
-		return []hypnohub.Comment{}, nil
-	}
 
 	commentRows, err := s.q.GetPostComments(ctx, int64(id))
 	if err != nil {
 		return nil, fmt.Errorf("getting comments for post %d: %w", id, err)
 	}
 
-	if s.needsCommentScrape(postRow.CommentsFetchedAt, commentRows) {
+	if postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt) {
 		tagRows, _ := s.q.GetPostTagsWithCategory(ctx, int64(id))
 		s.resolvePostView(ctx, id, tagRows, true)
 		if reloaded, err := s.q.GetPostComments(ctx, int64(id)); err == nil {
@@ -1345,14 +1337,8 @@ func (s *Store) GetPostComments(ctx context.Context, id hypnohub.PostID) ([]hypn
 	return out, nil
 }
 
-func (s *Store) needsCommentScrape(commentsFetchedAt int64, commentRows []sqlcgen.PostComment) bool {
-	if commentsFetchedAt == 0 {
-		return true
-	}
-	if len(commentRows) == 0 && time.Now().Unix()-commentsFetchedAt > 3600 {
-		return true
-	}
-	return false
+func (s *Store) needsCommentScrape(commentsFetchedAt int64) bool {
+	return time.Now().Unix()-commentsFetchedAt > 3600
 }
 
 func postCommentsToHypnohub(rows []sqlcgen.PostComment) []hypnohub.Comment {
@@ -1361,12 +1347,13 @@ func postCommentsToHypnohub(rows []sqlcgen.PostComment) []hypnohub.Comment {
 	}
 	out := make([]hypnohub.Comment, len(rows))
 	for i, r := range rows {
+		createdAt, _ := hypnohub.ParseDate(r.CreatedAt)
 		out[i] = hypnohub.Comment{
 			ID:        hypnohub.CommentID(r.ID),
 			PostID:    hypnohub.PostID(r.PostID),
 			Creator:   r.Creator,
 			CreatorID: int(r.CreatorID),
-			CreatedAt: r.CreatedAt,
+			CreatedAt: createdAt,
 			Score:     int(r.Score),
 			Body:      r.Body,
 		}
@@ -1443,13 +1430,24 @@ func (s *Store) resolvePostView(ctx context.Context, id hypnohub.PostID, tagRows
 	}
 
 	if needsComments || len(scrapedComments) > 0 {
+		confirmed := true
 		if len(scrapedComments) == 0 && needsComments {
-			if dapiComments, dapiErr := s.client.CommentsDAPI(rCtx, id); dapiErr == nil && len(dapiComments) > 0 {
+			dapiComments, dapiErr := s.client.CommentsDAPI(rCtx, id)
+			if dapiErr != nil {
+				slog.Warn("comment fallback failed", "post_id", id, "err", dapiErr)
+				confirmed = false
+				if ctx.Err() == nil {
+					s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+				}
+			} else {
 				scrapedComments = dapiComments
 			}
 		}
-		if err := s.persistPostComments(context.WithoutCancel(ctx), id, scrapedComments); err != nil {
-			slog.Warn("failed to persist on-demand post comments", "post_id", id, "err", err)
+		if confirmed {
+			clearExisting := len(scrapedComments) > 0 || len(scraped) > 0
+			if err := s.persistPostComments(context.WithoutCancel(ctx), id, scrapedComments, clearExisting); err != nil {
+				slog.Warn("failed to persist on-demand post comments", "post_id", id, "err", err)
+			}
 		}
 	}
 
@@ -1499,7 +1497,7 @@ func (s *Store) resolvePostView(ctx context.Context, id hypnohub.PostID, tagRows
 	}
 }
 
-func (s *Store) persistPostComments(ctx context.Context, postID hypnohub.PostID, comments []hypnohub.Comment) error {
+func (s *Store) persistPostComments(ctx context.Context, postID hypnohub.PostID, comments []hypnohub.Comment, clearExisting bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin post comments tx: %w", err)
@@ -1507,6 +1505,11 @@ func (s *Store) persistPostComments(ctx context.Context, postID hypnohub.PostID,
 	defer tx.Rollback()
 
 	qtx := s.q.WithTx(tx)
+	if clearExisting {
+		if err := qtx.DeletePostComments(ctx, int64(postID)); err != nil {
+			return fmt.Errorf("deleting existing comments for post %d: %w", postID, err)
+		}
+	}
 	for _, c := range comments {
 		if c.ID <= 0 {
 			continue
@@ -1516,7 +1519,7 @@ func (s *Store) persistPostComments(ctx context.Context, postID hypnohub.PostID,
 			PostID:    int64(postID),
 			Creator:   c.Creator,
 			CreatorID: int64(c.CreatorID),
-			CreatedAt: c.CreatedAt,
+			CreatedAt: c.CreatedAt.RFC3339(),
 			Score:     int64(c.Score),
 			Body:      c.Body,
 		}); err != nil {

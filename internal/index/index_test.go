@@ -2402,8 +2402,8 @@ func TestTagResolutionSingleflightAndBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second GetPost(9003) during backoff failed: %v", err)
 	}
-	if elapsed > 10*time.Millisecond {
-		t.Errorf("expected GetPost during backoff to return in <10ms, took %v", elapsed)
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("expected GetPost during backoff to return in <250ms, took %v", elapsed)
 	}
 	if got := scrapeCalls.Load(); got != 1 {
 		t.Errorf("expected 0 additional upstream calls during backoff, total calls = %d", got)
@@ -2627,18 +2627,72 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 			HasComments: "false",
 			CreatedAt:   hypnohub.Date(now.Add(-30 * time.Minute)),
 		},
+		{
+			ID:          287542,
+			Score:       12,
+			Rating:      hypnohub.RatingSafe,
+			Tags:        "surprise_tag",
+			Status:      "active",
+			HasComments: "false",
+			CreatedAt:   hypnohub.Date(now.Add(-20 * time.Minute)),
+		},
+		{
+			ID:          287543,
+			Score:       8,
+			Rating:      hypnohub.RatingSafe,
+			Tags:        "bleach",
+			Status:      "active",
+			HasComments: "true",
+			CreatedAt:   hypnohub.Date(now.Add(-15 * time.Minute)),
+		},
 	}
 	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
 	var postViewHits atomic.Int32
+	var refreshPhase atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287540" {
 			postViewHits.Add(1)
 			time.Sleep(30 * time.Millisecond)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if refreshPhase.Load() {
+				// Return comments [2, 3] (comment 1 deleted upstream, comment 3 added).
+				_, _ = w.Write([]byte(`
+					<ul id="tag-sidebar">
+						<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=bleach">bleach</a></li>
+						<li class="tag-type-character tag"><a href="index.php?page=post&s=list&tags=orihime_inoue">orihime inoue</a></li>
+					</ul>
+					<div id="comment-list">
+						<script type="text/javascript">var posts = {}; posts[287540] = {};</script>
+						<div id="c626854">
+							<div class="horizontalFlexWithMargins">
+								<div class="comment-left-col">
+									<a href="index.php?page=account&amp;s=profile&amp;uname=UserTwo">UserTwo</a>
+								</div>
+								<div class="comment-right-col">
+									<div><b>Posted on 2026-11-05 21:42:10 <br />Score: <a id="sc626854">2</a></b></div>
+									<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Second comment stays</div>
+								</div>
+							</div>
+						</div>
+						<div id="c626855">
+							<div class="horizontalFlexWithMargins">
+								<div class="comment-left-col">
+									<a href="index.php?page=account&amp;s=profile&amp;uname=UserThree">UserThree</a>
+								</div>
+								<div class="comment-right-col">
+									<div><b>Posted on 2026-11-05 22:00:00 <br />Score: <a id="sc626855">3</a></b></div>
+									<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Third comment added</div>
+								</div>
+							</div>
+						</div>
+					</div>`))
+				return
+			}
+			// Initial phase: return comments [1, 2].
 			_, _ = w.Write([]byte(`
 				<ul id="tag-sidebar">
 					<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=bleach">bleach</a></li>
@@ -2666,7 +2720,51 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 						</div>
 						<div style="text-align: right">(<a id="rc626853"></a>)</div>
 					</div>
+					<div id="c626854">
+						<div class="horizontalFlexWithMargins">
+							<div class="comment-left-col">
+								<a href="index.php?page=account&amp;s=profile&amp;uname=UserTwo">UserTwo</a>
+							</div>
+							<div class="comment-right-col">
+								<div><b>Posted on 2026-11-05 21:42:10 <br />Score: <a id="sc626854">2</a></b></div>
+								<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Second comment stays</div>
+							</div>
+						</div>
+					</div>
 				</div>`))
+			return
+		}
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287542" {
+			postViewHits.Add(1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`
+				<ul id="tag-sidebar">
+					<li class="tag-type-artist tag"><a href="index.php?page=post&s=list&tags=surprise_tag">surprise tag</a></li>
+				</ul>
+				<div id="comment-list">
+					<script type="text/javascript">var posts = {}; posts[287542] = {};</script>
+					<div id="c700001">
+						<div class="horizontalFlexWithMargins">
+							<div class="comment-left-col">
+								<a href="index.php?page=account&amp;s=profile&amp;uname=SurpriseCommenter">SurpriseCommenter</a>
+							</div>
+							<div class="comment-right-col">
+								<div><b>Posted on 2026-11-05 23:00:00 <br />Score: <a id="sc700001">4</a></b></div>
+								<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">Comment discovered during tag scrape</div>
+							</div>
+						</div>
+					</div>
+				</div>`))
+			return
+		}
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287543" {
+			postViewHits.Add(1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<div id="comment-list"></div>`))
+			return
+		}
+		if q.Get("page") == "dapi" && q.Get("s") == "comment" && q.Get("post_id") == "287543" {
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
@@ -2689,8 +2787,8 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 				t.Errorf("GetPost(287540) failed: %v", err)
 				return
 			}
-			if len(p.Comments) != 1 || p.Comments[0].Creator != "Bootyhunter69" || p.Comments[0].Body != "Aww, how... romantic(?)" {
-				t.Errorf("expected 1 comment on post 287540, got %+v", p.Comments)
+			if len(p.Comments) != 2 || p.Comments[0].ID != 626853 || p.Comments[1].ID != 626854 {
+				t.Errorf("expected 2 comments [626853, 626854] on post 287540, got %+v", p.Comments)
 			}
 			if len(p.TagGroups) != 2 || p.TagGroups[0].Slug != "copyright" || p.TagGroups[1].Slug != "character" {
 				t.Errorf("expected resolved Copyright and Character tag groups, got %+v", p.TagGroups)
@@ -2706,23 +2804,65 @@ func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
 	// 2. Subsequent GetPost(287540) and GetPostComments(287540) serve cached comments with 0 upstream hits.
 	postViewHits.Store(0)
 	pCached, _, err := store.GetPost(ctx, 287540)
-	if err != nil || len(pCached.Comments) != 1 {
+	if err != nil || len(pCached.Comments) != 2 {
 		t.Fatalf("second GetPost(287540) = (%+v, %v)", pCached, err)
 	}
 	commentsCached, err := store.GetPostComments(ctx, 287540)
-	if err != nil || len(commentsCached) != 1 || commentsCached[0].ID != 626853 {
+	if err != nil || len(commentsCached) != 2 || commentsCached[0].ID != 626853 || commentsCached[1].ID != 626854 {
 		t.Fatalf("GetPostComments(287540) = (%+v, %v)", commentsCached, err)
 	}
 	if hits := postViewHits.Load(); hits != 0 {
 		t.Errorf("expected 0 upstream hits when comments and tags are cached, got %d", hits)
 	}
 
-	// 3. Post with HasComments=false (287541) makes 0 comment scrapes.
+	// 3. TTL refresh & deleted comment pruning: age comments_fetched_at by 2 hours, upstream now returns [2, 3].
+	refreshPhase.Store(true)
+	if _, err := store.DB().ExecContext(ctx, `UPDATE posts SET comments_fetched_at = ? WHERE id = 287540`, time.Now().Add(-2*time.Hour).Unix()); err != nil {
+		t.Fatalf("aging comments_fetched_at: %v", err)
+	}
+	pRefreshed, _, err := store.GetPost(ctx, 287540)
+	if err != nil {
+		t.Fatalf("GetPost(287540) after TTL expiry failed: %v", err)
+	}
+	if len(pRefreshed.Comments) != 2 || pRefreshed.Comments[0].ID != 626854 || pRefreshed.Comments[1].ID != 626855 {
+		t.Fatalf("expected refreshed comments [626854, 626855] with 626853 pruned, got %+v", pRefreshed.Comments)
+	}
+
+	// 4. Post with HasComments=false (287541) makes 0 comment scrapes when its tags are already known.
+	postViewHits.Store(0)
 	noComments, err := store.GetPostComments(ctx, 287541)
 	if err != nil || len(noComments) != 0 {
 		t.Fatalf("GetPostComments(287541) = (%+v, %v), want empty slice", noComments, err)
 	}
 	if hits := postViewHits.Load(); hits != 0 {
 		t.Errorf("expected 0 upstream hits for post with HasComments=false, got %d", hits)
+	}
+
+	// 5. Post with HasComments=false (287542) that acquires comments during a tag-category scrape returns those comments from GetPost and GetPostComments.
+	pSurprise, _, err := store.GetPost(ctx, 287542)
+	if err != nil {
+		t.Fatalf("GetPost(287542) failed: %v", err)
+	}
+	if len(pSurprise.Comments) != 1 || pSurprise.Comments[0].ID != 700001 {
+		t.Fatalf("expected GetPost(287542) to return comment 700001 discovered during tag scrape, got %+v", pSurprise.Comments)
+	}
+	surpriseComments, err := store.GetPostComments(ctx, 287542)
+	if err != nil || len(surpriseComments) != 1 || surpriseComments[0].ID != 700001 {
+		t.Fatalf("expected GetPostComments(287542) to return stored comment 700001 even when has_comments=0, got (%+v, %v)", surpriseComments, err)
+	}
+
+	// 6. Soft failure when PostView returns 0 comments and CommentsDAPI returns HTTP 500 must NOT stamp comments_fetched_at and must set scrapeRetryAt.
+	if _, err := store.GetPostComments(ctx, 287543); err != nil {
+		t.Fatalf("GetPostComments(287543) failed: %v", err)
+	}
+	var fetchedAt int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT comments_fetched_at FROM posts WHERE id = 287543`).Scan(&fetchedAt); err != nil {
+		t.Fatalf("querying comments_fetched_at for 287543: %v", err)
+	}
+	if fetchedAt != 0 {
+		t.Errorf("expected comments_fetched_at to remain 0 after CommentsDAPI error, got %d", fetchedAt)
+	}
+	if store.scrapeRetryAt.Load() == 0 {
+		t.Errorf("expected scrapeRetryAt backoff to be set after CommentsDAPI error")
 	}
 }

@@ -255,8 +255,8 @@
 									{{ if ne .Score 0 }}
 									<span class="comment-score" title="Comment Score">{{ if gt .Score 0 }}+{{ end }}{{ .Score }}</span>
 									{{ end }}
-									{{ if .CreatedAt }}
-									<time class="comment-date">{{ .CreatedAt }}</time>
+									{{ if not .CreatedAt.IsZero }}
+									<time class="comment-date" datetime="{{ .CreatedAt.RFC3339 }}">{{ .CreatedAt.FormatComment }}</time>
 									{{ end }}
 								</div>
 							</header>

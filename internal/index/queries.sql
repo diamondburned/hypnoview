@@ -199,4 +199,8 @@ UPDATE posts
 SET comments_fetched_at = ?
 WHERE id = ?;
 
+-- name: DeletePostComments :exec
+DELETE FROM post_comments WHERE post_id = ?;
+
+
 

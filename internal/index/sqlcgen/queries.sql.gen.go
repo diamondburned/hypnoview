@@ -79,6 +79,18 @@ func (q *Queries) CountTags(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const deletePostComments = `-- name: DeletePostComments :exec
+DELETE FROM post_comments WHERE post_id = ?
+`
+
+// DeletePostComments
+//
+//	DELETE FROM post_comments WHERE post_id = ?
+func (q *Queries) DeletePostComments(ctx context.Context, postID int64) error {
+	_, err := q.db.ExecContext(ctx, deletePostComments, postID)
+	return err
+}
+
 const deletePostTagsByPostID = `-- name: DeletePostTagsByPostID :exec
 DELETE FROM post_tags WHERE post_id = ?
 `
