@@ -2386,3 +2386,100 @@ html[data-thumb-fit="contain"] .card-media-link img {
 		padding: 0.75rem 1rem;
 	}
 }
+
+/* PWA Shell Stage & Offline Card */
+.pwa-shell-stage {
+	min-height: calc(100dvh - var(--topbar-height, 55px) - 8rem);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 2rem 1rem;
+	transition: opacity 150ms ease-out;
+}
+
+.pwa-shell-stage.fade-out {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.pwa-shell-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	gap: 1.25rem;
+	max-width: 420px;
+	width: 100%;
+	padding: 2.5rem 2rem;
+	background: var(--surface-container);
+	border: 1px solid var(--outline-variant);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+}
+
+.pwa-shell-spiral {
+	display: block;
+	animation: pwa-spiral-pulse 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+	filter: drop-shadow(0 0 16px rgba(248, 113, 160, 0.35));
+}
+
+@keyframes pwa-spiral-pulse {
+	0% {
+		transform: scale(0.95) rotate(0deg);
+		opacity: 0.85;
+	}
+	50% {
+		transform: scale(1.05) rotate(180deg);
+		opacity: 1;
+	}
+	100% {
+		transform: scale(0.95) rotate(360deg);
+		opacity: 0.85;
+	}
+}
+
+.pwa-shell-status {
+	font-size: 0.95rem;
+	color: var(--on-surface-variant);
+	margin: 0;
+}
+
+.pwa-shell-title {
+	font-size: 1.25rem;
+	font-weight: 700;
+	color: var(--on-surface);
+	margin: 0;
+}
+
+.pwa-shell-msg {
+	font-size: 0.9rem;
+	color: var(--on-surface-variant);
+	line-height: 1.5;
+	margin: 0;
+}
+
+.pwa-shell-retry-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	padding: 0.65rem 1.5rem;
+	font-size: 0.9rem;
+	font-weight: 600;
+	border-radius: var(--radius-full);
+	background: var(--primary);
+	color: var(--on-primary);
+	border: none;
+	cursor: pointer;
+	transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.pwa-shell-retry-btn:hover {
+	opacity: 0.92;
+	transform: scale(1.02);
+}
+
+.pwa-shell-retry-btn:active {
+	transform: scale(0.98);
+}

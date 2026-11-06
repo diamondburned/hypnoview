@@ -46,7 +46,21 @@ pkgs.testers.runNixOSTest {
     stats = json.loads(stats_raw)
     assert stats.get("total_posts") == 0, f"unexpected total_posts: {stats}"
 
-    # 4. /var/lib/hypnogaze/hypnogaze.db exists on disk inside the VM
+    # 4. PWA endpoints: /manifest.webmanifest, /sw.js, and /shell.html
+    manifest_raw = machine.succeed("curl -fsS http://127.0.0.1:8080/manifest.webmanifest")
+    manifest = json.loads(manifest_raw)
+    assert manifest.get("name") == "hypnogaze", f"unexpected manifest: {manifest}"
+    assert manifest.get("display") == "standalone", f"unexpected display: {manifest}"
+
+    sw_raw = machine.succeed("curl -fsS http://127.0.0.1:8080/sw.js")
+    assert "hypnogaze-v-" in sw_raw, f"sw.js missing content-hash cache version: {sw_raw[:200]}"
+    assert "__CACHE_VERSION__" not in sw_raw, "sw.js contains unresolved __CACHE_VERSION__"
+
+    shell_html = machine.succeed("curl -fsS http://127.0.0.1:8080/shell.html")
+    assert "<svg" not in shell_html, "shell.html contains inline <svg>"
+    assert "pwa-shell-stage" in shell_html, "shell.html missing pwa-shell-stage"
+
+    # 5. /var/lib/hypnogaze/hypnogaze.db exists on disk inside the VM
     machine.succeed("test -f /var/lib/hypnogaze/hypnogaze.db")
   '';
 }

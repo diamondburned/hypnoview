@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b10" />
+	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f9" />
+	<meta name="referrer" content="same-origin" />
+	<title>hypnogaze</title>
+
+	<link rel="icon" href="/static/spiral.svg" type="image/svg+xml" />
+	<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+	<link rel="manifest" href="/manifest.webmanifest" />
+	<meta name="mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+	<meta name="apple-mobile-web-app-title" content="hypnogaze" />
+
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
+
+	<script>
+	document.documentElement.classList.add("js");
+	(function () {
+		try {
+			var raw = localStorage.getItem("hypnogaze.settings") || localStorage.getItem("hypnoview.settings");
+			if (!raw) return;
+			var s = JSON.parse(raw);
+			var el = document.documentElement;
+			if (s.theme === "light" || s.theme === "dark") {
+				el.dataset.theme = s.theme;
+			}
+			if (s.viewMode === "single" || s.viewMode === "grid") {
+				el.dataset.viewMode = s.viewMode;
+			}
+			if (s.thumbFit === "contain" || s.thumbFit === "cover") {
+				el.dataset.thumbFit = s.thumbFit;
+			}
+			var maxCols = parseInt(s.maxColumns, 10);
+			if (maxCols >= 1 && maxCols <= 10) {
+				el.style.setProperty("--grid-max-cols", String(maxCols));
+			}
+			var minW = parseInt(s.minColumnWidth, 10);
+			if (minW >= 150 && minW <= 420) {
+				el.style.setProperty("--grid-min-width", minW + "px");
+			}
+		} catch (_) {}
+	})();
+	</script>
+	<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+	<header class="topbar">
+		<div class="topbar-inner">
+			<div class="topbar-left">
+				<a href="/" class="brand">
+					<span class="brand-icon-bubble" aria-label="Hypnogaze icon">
+						<img src="/static/spiral.svg" class="brand-spiral-svg" alt="" width="20" height="20" aria-hidden="true" />
+					</span>
+					<span class="brand-text">hypnogaze</span>
+				</a>
+				<nav class="topbar-nav" aria-label="Main navigation">
+					<a href="/" class="nav-btn active" aria-current="page">Browse</a>
+					<a href="/popular" class="nav-btn">Popular</a>
+				</nav>
+			</div>
+		</div>
+	</header>
+
+	<main class="container">
+		<div id="pwa-shell-stage" class="pwa-shell-stage">
+			<div id="pwa-shell-loading" class="pwa-shell-card">
+				<img src="/static/spiral.svg" alt="" class="pwa-shell-spiral" width="64" height="64" />
+				<p class="pwa-shell-status">Connecting to hypnogaze…</p>
+			</div>
+
+			<div id="pwa-shell-offline" class="pwa-shell-card" style="display: none;">
+				<img src="/static/spiral.svg" alt="" width="48" height="48" />
+				<h2 class="pwa-shell-title">Server Unreachable</h2>
+				<p class="pwa-shell-msg">Could not reach gaze.d14.pet. Check your connection and try again.</p>
+				<button type="button" id="pwa-shell-retry-btn" class="pwa-shell-retry-btn">
+					<span class="material-symbols-rounded" aria-hidden="true">refresh</span>
+					<span>Retry</span>
+				</button>
+			</div>
+		</div>
+	</main>
+
+	<script>
+	(function () {
+		const stage = document.getElementById("pwa-shell-stage");
+		const loadingCard = document.getElementById("pwa-shell-loading");
+		const offlineCard = document.getElementById("pwa-shell-offline");
+		const retryBtn = document.getElementById("pwa-shell-retry-btn");
+
+		// Determine target URL to load, stripping `pwa=1`
+		const curUrl = new URL(window.location.href);
+		if (curUrl.searchParams.has("pwa")) {
+			curUrl.searchParams.delete("pwa");
+			window.history.replaceState(null, "", curUrl.pathname + curUrl.search + curUrl.hash);
+		}
+		const cleanTarget = curUrl.pathname + curUrl.search + curUrl.hash || "/";
+
+		function showOffline() {
+			if (loadingCard) loadingCard.style.display = "none";
+			if (offlineCard) offlineCard.style.display = "flex";
+		}
+
+		function showLoading() {
+			if (offlineCard) offlineCard.style.display = "none";
+			if (loadingCard) loadingCard.style.display = "flex";
+		}
+
+		async function attemptTransition() {
+			showLoading();
+			try {
+				const res = await fetch(cleanTarget, {
+					headers: {
+						"X-Hypnogaze-Shell": "1",
+						"Accept": "text/html"
+					},
+					cache: "no-store"
+				});
+
+				if (!res.ok) {
+					showOffline();
+					return;
+				}
+
+				const htmlText = await res.text();
+				const parser = new DOMParser();
+				const doc = parser.parseFromString(htmlText, "text/html");
+
+				// Update page title & meta
+				if (doc.title) {
+					document.title = doc.title;
+				}
+				["description", "robots"].forEach((name) => {
+					const newMeta = doc.querySelector(`meta[name="${name}"]`);
+					const curMeta = document.querySelector(`meta[name="${name}"]`);
+					if (newMeta && curMeta) {
+						curMeta.content = newMeta.content;
+					} else if (newMeta && !curMeta) {
+						document.head.appendChild(newMeta.cloneNode(true));
+					}
+				});
+				Array.from(doc.querySelectorAll('meta[property^="og:"], meta[name^="twitter:"]')).forEach((meta) => {
+					const attr = meta.hasAttribute("property") ? "property" : "name";
+					const val = meta.getAttribute(attr);
+					const curMeta = document.querySelector(`meta[${attr}="${val}"]`);
+					if (curMeta) {
+						curMeta.content = meta.content;
+					} else {
+						document.head.appendChild(meta.cloneNode(true));
+					}
+				});
+
+				// Fade out shell
+				if (stage) {
+					stage.classList.add("fade-out");
+				}
+
+				setTimeout(() => {
+					document.body.innerHTML = doc.body.innerHTML;
+
+					// Load or execute HTMX & app scripts
+					function ensureScript(src, type, onLoad) {
+						let script = document.querySelector(`script[src="${src}"]`);
+						if (!script) {
+							script = document.createElement("script");
+							script.src = src;
+							if (type) script.type = type;
+							script.onload = onLoad;
+							document.body.appendChild(script);
+						} else if (onLoad) {
+							onLoad();
+						}
+					}
+
+					ensureScript("/static/htmx.min.js", null, () => {
+						if (window.htmx) {
+							window.htmx.process(document.body);
+						}
+						ensureScript("/static/app.js", "module", () => {
+							if (window.hypnogazeInit) {
+								window.hypnogazeInit();
+							}
+						});
+					});
+				}, 150);
+			} catch (err) {
+				showOffline();
+			}
+		}
+
+		retryBtn?.addEventListener("click", () => {
+			attemptTransition();
+		});
+
+		window.addEventListener("online", () => {
+			attemptTransition();
+		});
+
+		attemptTransition();
+	})();
+	</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "id": "/?pwa=1",
+  "name": "hypnogaze",
+  "short_name": "hypnogaze",
+  "description": "Mobile-friendly hypnohub feed, score velocity tracking, and media viewer",
+  "start_url": "/?pwa=1",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0b10",
+  "theme_color": "#0d0b10",
+  "icons": [
+    {
+      "src": "/static/spiral.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

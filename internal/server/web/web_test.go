@@ -1,7 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -466,6 +468,137 @@ func TestWebAPICORS(t *testing.T) {
 	}
 	if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
 		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
+	}
+}
+
+func TestPWAManifestAndServiceWorker(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	srv := NewServer(store, false)
+
+	// 1. GET /manifest.webmanifest
+	manifestReq := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
+	manifestRec := httptest.NewRecorder()
+	srv.ServeHTTP(manifestRec, manifestReq)
+
+	if manifestRec.Code != http.StatusOK {
+		t.Fatalf("GET /manifest.webmanifest code = %d, want %d", manifestRec.Code, http.StatusOK)
+	}
+	ct := manifestRec.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/manifest+json") {
+		t.Errorf("expected Content-Type application/manifest+json, got: %s", ct)
+	}
+	var manifestData map[string]any
+	if err := json.Unmarshal(manifestRec.Body.Bytes(), &manifestData); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	if manifestData["name"] != "hypnogaze" {
+		t.Errorf("manifest name = %v, want hypnogaze", manifestData["name"])
+	}
+	if manifestData["display"] != "standalone" {
+		t.Errorf("manifest display = %v, want standalone", manifestData["display"])
+	}
+	if manifestData["start_url"] != "/?pwa=1" {
+		t.Errorf("manifest start_url = %v, want /?pwa=1", manifestData["start_url"])
+	}
+
+	// 2. GET /sw.js
+	swReq := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	swRec := httptest.NewRecorder()
+	srv.ServeHTTP(swRec, swReq)
+
+	if swRec.Code != http.StatusOK {
+		t.Fatalf("GET /sw.js code = %d, want %d", swRec.Code, http.StatusOK)
+	}
+	swCT := swRec.Header().Get("Content-Type")
+	if !strings.Contains(swCT, "application/javascript") {
+		t.Errorf("sw.js Content-Type = %s, want application/javascript", swCT)
+	}
+	if cc := swRec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+		t.Errorf("sw.js Cache-Control = %s, want no-cache", cc)
+	}
+	if swa := swRec.Header().Get("Service-Worker-Allowed"); swa != "/" {
+		t.Errorf("sw.js Service-Worker-Allowed = %s, want /", swa)
+	}
+	swBody := swRec.Body.String()
+	if strings.Contains(swBody, "__CACHE_VERSION__") {
+		t.Errorf("sw.js still contains unresolved __CACHE_VERSION__")
+	}
+	if !strings.Contains(swBody, "hypnogaze-v-") {
+		t.Errorf("sw.js does not contain resolved content hash cache name")
+	}
+
+	// 3. GET /shell.html and GET /static/shell.html
+	for _, shellPath := range []string{"/shell.html", "/static/shell.html"} {
+		shellReq := httptest.NewRequest(http.MethodGet, shellPath, nil)
+		shellRec := httptest.NewRecorder()
+		srv.ServeHTTP(shellRec, shellReq)
+
+		if shellRec.Code != http.StatusOK {
+			t.Fatalf("GET %s code = %d, want %d", shellPath, shellRec.Code, http.StatusOK)
+		}
+		shellBody := shellRec.Body.String()
+		if strings.Contains(shellBody, "<svg") {
+			t.Errorf("%s contains inline <svg> tag (forbidden by rule)", shellPath)
+		}
+		if !strings.Contains(shellBody, `id="pwa-shell-stage"`) {
+			t.Errorf("%s missing #pwa-shell-stage", shellPath)
+		}
+		if !strings.Contains(shellBody, `id="pwa-shell-loading"`) {
+			t.Errorf("%s missing #pwa-shell-loading", shellPath)
+		}
+		if !strings.Contains(shellBody, `id="pwa-shell-offline"`) {
+			t.Errorf("%s missing #pwa-shell-offline", shellPath)
+		}
+		if !strings.Contains(shellBody, `X-Hypnogaze-Shell`) {
+			t.Errorf("%s missing X-Hypnogaze-Shell transition logic", shellPath)
+		}
+	}
+
+	// 4. PNG icons magic bytes and Content-Type
+	pngIcons := []string{
+		"/static/icon-192.png",
+		"/static/icon-512.png",
+		"/static/icon-maskable-512.png",
+		"/static/apple-touch-icon.png",
+	}
+	pngMagic := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	for _, iconPath := range pngIcons {
+		iconReq := httptest.NewRequest(http.MethodGet, iconPath, nil)
+		iconRec := httptest.NewRecorder()
+		srv.ServeHTTP(iconRec, iconReq)
+
+		if iconRec.Code != http.StatusOK {
+			t.Fatalf("GET %s code = %d, want %d", iconPath, iconRec.Code, http.StatusOK)
+		}
+		if ct := iconRec.Header().Get("Content-Type"); !strings.Contains(ct, "image/png") {
+			t.Errorf("%s Content-Type = %s, want image/png", iconPath, ct)
+		}
+		data := iconRec.Body.Bytes()
+		if len(data) < len(pngMagic) || !bytes.Equal(data[:len(pngMagic)], pngMagic) {
+			t.Errorf("%s missing valid PNG magic bytes", iconPath)
+		}
+	}
+
+	// 5. Layout template includes PWA meta tags and manifest link
+	rootReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	rootRec := httptest.NewRecorder()
+	srv.ServeHTTP(rootRec, rootReq)
+	rootBody := rootRec.Body.String()
+	for _, tag := range []string{
+		`<link rel="manifest" href="/manifest.webmanifest" />`,
+		`<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />`,
+		`<meta name="mobile-web-app-capable" content="yes" />`,
+		`<meta name="apple-mobile-web-app-capable" content="yes" />`,
+	} {
+		if !strings.Contains(rootBody, tag) {
+			t.Errorf("root HTML missing expected PWA tag %q", tag)
+		}
 	}
 }
 

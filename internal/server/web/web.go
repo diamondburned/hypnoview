@@ -3,7 +3,9 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -33,6 +36,7 @@ func init() {
 	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
 	_ = mime.AddExtensionType(".js", "application/javascript; charset=utf-8")
 	_ = mime.AddExtensionType(".svg", "image/svg+xml")
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json; charset=utf-8")
 }
 
 //go:embed static/*
@@ -241,6 +245,9 @@ func NewServer(store *index.Store, devMode bool) *Server {
 		http.Redirect(w, r, "/static/spiral.svg", http.StatusMovedPermanently)
 	})
 	s.mux.Get("/robots.txt", s.handleRobotsTxt)
+	s.mux.Get("/manifest.webmanifest", s.handleManifest)
+	s.mux.Get("/sw.js", s.handleServiceWorker)
+	s.mux.Get("/shell.html", s.handleShell)
 	api.RegisterRoutes(s.mux, s.store)
 
 	s.mux.Get("/", s.handleBrowse)
@@ -561,6 +568,102 @@ func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(robotsTxt))
+}
+
+var (
+	cacheVersionOnce sync.Once
+	staticCacheHash  string
+)
+
+func computeStaticCacheHash() string {
+	h := sha256.New()
+	files := []string{
+		"static/style.css",
+		"static/app.js",
+		"static/htmx.min.js",
+		"static/shell.html",
+		"static/manifest.webmanifest",
+		"static/spiral.svg",
+		"static/icon-192.png",
+		"static/icon-512.png",
+		"static/icon-maskable-512.png",
+		"static/apple-touch-icon.png",
+	}
+	for _, f := range files {
+		data, err := staticFS.ReadFile(f)
+		if err == nil {
+			h.Write([]byte(f))
+			h.Write(data)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+func getCacheVersion(devMode bool) string {
+	if devMode {
+		return fmt.Sprintf("dev-%d", time.Now().UnixNano())
+	}
+	cacheVersionOnce.Do(func() {
+		staticCacheHash = "hypnogaze-v-" + computeStaticCacheHash()
+	})
+	return staticCacheHash
+}
+
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
+	var data []byte
+	var err error
+	if s.devMode {
+		data, err = fs.ReadFile(devWebFS(), "static/manifest.webmanifest")
+	} else {
+		data, err = staticFS.ReadFile("static/manifest.webmanifest")
+	}
+	if err != nil {
+		http.Error(w, "manifest not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
+	var swData []byte
+	var err error
+	if s.devMode {
+		swData, err = fs.ReadFile(devWebFS(), "static/sw.js")
+	} else {
+		swData, err = staticFS.ReadFile("static/sw.js")
+	}
+	if err != nil {
+		http.Error(w, "service worker not found", http.StatusNotFound)
+		return
+	}
+
+	cacheVersion := getCacheVersion(s.devMode)
+	rendered := bytes.ReplaceAll(swData, []byte("__CACHE_VERSION__"), []byte(cacheVersion))
+
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Service-Worker-Allowed", "/")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(rendered)
+}
+
+func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
+	var data []byte
+	var err error
+	if s.devMode {
+		data, err = fs.ReadFile(devWebFS(), "static/shell.html")
+	} else {
+		data, err = staticFS.ReadFile("static/shell.html")
+	}
+	if err != nil {
+		http.Error(w, "shell not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 type feedMode string

@@ -3,52 +3,19 @@
 // 2. Tag chip toggle (add/remove) & active tag badges
 // 3. Interactive media lightbox with 0ms progressive thumbnail preview and background scroll locking
 // 4. Post detail progressive preloading & inline HD toggle
+// 5. Progressive Web App (PWA) Service Worker registration & self-update checks
 
 document.documentElement.classList.add("js");
 
 // Topbar scroll-reveal & dynamic height tracking
-const topbar = document.querySelector(".topbar");
-
 function updateTopbarHeight() {
+	const topbar = document.querySelector(".topbar");
 	if (!topbar) return;
 	const h = topbar.offsetHeight || 55;
 	document.documentElement.style.setProperty("--topbar-height", `${h}px`);
 }
 
-updateTopbarHeight();
-window.addEventListener("resize", updateTopbarHeight, { passive: true });
-
 let lastScrollY = window.scrollY;
-
-window.addEventListener("scroll", () => {
-	const scrollY = Math.max(0, window.scrollY);
-	const topbarHeight = topbar?.offsetHeight || 55;
-
-	if (document.body.classList.contains("filter-open") || document.getElementById("mobile-filter-state")?.checked) {
-		document.body.classList.remove("topbar-hidden");
-		lastScrollY = scrollY;
-		return;
-	}
-
-	if (scrollY <= 0) {
-		document.body.classList.remove("topbar-hidden");
-		document.body.classList.remove("topbar-overlay");
-	} else if (scrollY > lastScrollY && scrollY > topbarHeight) {
-		// Scrolling down
-		document.body.classList.add("topbar-hidden");
-		document.body.classList.remove("topbar-overlay");
-	} else if (scrollY < lastScrollY - 2) {
-		// Scrolling up
-		document.body.classList.remove("topbar-hidden");
-		if (scrollY > 10) {
-			document.body.classList.add("topbar-overlay");
-		} else {
-			document.body.classList.remove("topbar-overlay");
-		}
-	}
-
-	lastScrollY = scrollY;
-}, { passive: true });
 
 // Settings & Preferences Management
 const DEFAULT_SETTINGS = {
@@ -219,72 +186,6 @@ if (!document.cookie.includes("hv_prefs=")) {
 }
 applyVisualSettings(currentSettings);
 
-// View Mode 1-click Toggle in Topbar
-const viewModeToggle = document.getElementById("view-mode-toggle");
-if (viewModeToggle) {
-	viewModeToggle.addEventListener("click", () => {
-		currentSettings.viewMode = currentSettings.viewMode === "single" ? "grid" : "single";
-		saveSettings(currentSettings);
-		syncSettingsDialogUI();
-	});
-}
-
-// Settings Dialog Elements & Logic
-const settingsDialog = document.getElementById("settings-dialog");
-const settingsToggle = document.getElementById("settings-toggle");
-const settingsCloseBtn = document.getElementById("settings-close-btn");
-const settingsDoneBtn = document.getElementById("settings-done-btn");
-const settingsResetBtn = document.getElementById("settings-reset-btn");
-const blockedTagsBtn = document.getElementById("blocked-tags-btn");
-
-let serverSnapshot = null;
-
-function getServerPrefsSnapshot() {
-	return JSON.stringify({
-		wb: currentSettings.defaultWindow?.browse,
-		wp: currentSettings.defaultWindow?.popular,
-		sb: currentSettings.defaultSort?.browse,
-		sp: currentSettings.defaultSort?.popular,
-		r: currentSettings.defaultRating,
-		bt: currentSettings.blockedTags
-	});
-}
-
-function openSettingsDialog(focusTarget) {
-	if (!settingsDialog) return;
-	serverSnapshot = getServerPrefsSnapshot();
-	syncSettingsDialogUI();
-	settingsDialog.showModal();
-	if (focusTarget) {
-		setTimeout(() => focusTarget.focus(), 50);
-	}
-}
-
-function closeSettingsDialog() {
-	if (!settingsDialog || !settingsDialog.open) return;
-	settingsDialog.close();
-}
-
-if (settingsDialog) {
-	settingsDialog.addEventListener("close", () => {
-		const currentSnapshot = getServerPrefsSnapshot();
-		if (serverSnapshot !== null && serverSnapshot !== currentSnapshot) {
-			window.location.reload();
-		}
-	});
-
-	settingsDialog.addEventListener("click", (e) => {
-		if (e.target === settingsDialog) {
-			closeSettingsDialog();
-		}
-	});
-}
-
-settingsToggle?.addEventListener("click", () => openSettingsDialog());
-settingsCloseBtn?.addEventListener("click", closeSettingsDialog);
-settingsDoneBtn?.addEventListener("click", closeSettingsDialog);
-blockedTagsBtn?.addEventListener("click", () => openSettingsDialog(document.getElementById("blocklist-input")));
-
 function setSegmentedActive(containerId, value) {
 	const container = document.getElementById(containerId);
 	if (!container) return;
@@ -370,143 +271,264 @@ function syncSettingsDialogUI() {
 	updateSettingsJsonTextarea();
 }
 
-// Dialog Interactive Controls
-document.querySelectorAll("#setting-theme .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.theme = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-theme", currentSettings.theme);
-		updateSettingsJsonTextarea();
+let serverSnapshot = null;
+
+function getServerPrefsSnapshot() {
+	return JSON.stringify({
+		wb: currentSettings.defaultWindow?.browse,
+		wp: currentSettings.defaultWindow?.popular,
+		sb: currentSettings.defaultSort?.browse,
+		sp: currentSettings.defaultSort?.popular,
+		r: currentSettings.defaultRating,
+		bt: currentSettings.blockedTags
 	});
-});
-
-document.querySelectorAll("#setting-view-mode .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.viewMode = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-view-mode", currentSettings.viewMode);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-thumb-fit .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.thumbFit = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-thumb-fit", currentSettings.thumbFit);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-enable-lightbox .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.enableLightbox = btn.dataset.value === "true";
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-enable-lightbox", currentSettings.enableLightbox ? "true" : "false");
-		updateSettingsJsonTextarea();
-	});
-});
-
-const settingMaxCols = document.getElementById("setting-max-cols");
-settingMaxCols?.addEventListener("input", () => {
-	const val = parseInt(settingMaxCols.value, 10);
-	currentSettings.maxColumns = val;
-	const valBadge = document.getElementById("setting-max-cols-val");
-	if (valBadge) valBadge.textContent = `${val} cols`;
-	saveSettings(currentSettings);
-	updateSettingsJsonTextarea();
-});
-
-const settingMinWidth = document.getElementById("setting-min-width");
-settingMinWidth?.addEventListener("input", () => {
-	const val = parseInt(settingMinWidth.value, 10);
-	currentSettings.minColumnWidth = val;
-	const valBadge = document.getElementById("setting-min-width-val");
-	if (valBadge) valBadge.textContent = `${val}px`;
-	saveSettings(currentSettings);
-	updateSettingsJsonTextarea();
-});
-
-document.querySelectorAll("#setting-sort-browse .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		if (!currentSettings.defaultSort) currentSettings.defaultSort = {};
-		currentSettings.defaultSort.browse = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-sort-browse", currentSettings.defaultSort.browse);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-window-popular .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.defaultWindow.popular = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-window-popular", currentSettings.defaultWindow.popular);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-window-browse .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.defaultWindow.browse = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-window-browse", currentSettings.defaultWindow.browse);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-default-rating .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.defaultRating = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-default-rating", currentSettings.defaultRating);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.querySelectorAll("#setting-zoom-mode .segmented-btn").forEach((btn) => {
-	btn.addEventListener("click", () => {
-		currentSettings.zoomMode = btn.dataset.value;
-		saveSettings(currentSettings);
-		setSegmentedActive("setting-zoom-mode", currentSettings.zoomMode);
-		updateSettingsJsonTextarea();
-	});
-});
-
-document.getElementById("setting-prefer-hd")?.addEventListener("change", (e) => {
-	currentSettings.preferHD = e.target.checked;
-	saveSettings(currentSettings);
-	updateSettingsJsonTextarea();
-});
-
-document.getElementById("setting-single-autoplay")?.addEventListener("change", (e) => {
-	currentSettings.singleAutoplay = e.target.checked;
-	saveSettings(currentSettings);
-	updateSettingsJsonTextarea();
-});
-
-const blocklistInput = document.getElementById("blocklist-input");
-const blocklistAddBtn = document.getElementById("blocklist-add-btn");
-const blocklistSuggestions = document.getElementById("blocklist-suggestions");
-
-function addBlocklistTag(tag) {
-	tag = (tag || "").toLowerCase().trim().replace(/^-+/, "");
-	if (!tag) return;
-	if (!currentSettings.blockedTags.includes(tag)) {
-		currentSettings.blockedTags.push(tag);
-		saveSettings(currentSettings);
-		renderBlocklistChips();
-		updateSettingsJsonTextarea();
-	}
-	if (blocklistInput) blocklistInput.value = "";
-	if (blocklistSuggestions) {
-		blocklistSuggestions.innerHTML = "";
-	}
 }
 
-blocklistAddBtn?.addEventListener("click", () => {
-	if (blocklistInput) addBlocklistTag(blocklistInput.value);
-});
+function initSettingsUI() {
+	const viewModeToggle = document.getElementById("view-mode-toggle");
+	if (viewModeToggle) {
+		viewModeToggle.onclick = () => {
+			currentSettings.viewMode = currentSettings.viewMode === "single" ? "grid" : "single";
+			saveSettings(currentSettings);
+			syncSettingsDialogUI();
+		};
+	}
+
+	const settingsDialog = document.getElementById("settings-dialog");
+	const settingsToggle = document.getElementById("settings-toggle");
+	const settingsCloseBtn = document.getElementById("settings-close-btn");
+	const settingsDoneBtn = document.getElementById("settings-done-btn");
+	const settingsResetBtn = document.getElementById("settings-reset-btn");
+	const blockedTagsBtn = document.getElementById("blocked-tags-btn");
+
+	function openSettingsDialog(focusTarget) {
+		if (!settingsDialog) return;
+		serverSnapshot = getServerPrefsSnapshot();
+		syncSettingsDialogUI();
+		settingsDialog.showModal();
+		if (focusTarget) {
+			setTimeout(() => focusTarget.focus(), 50);
+		}
+	}
+
+	function closeSettingsDialog() {
+		if (!settingsDialog || !settingsDialog.open) return;
+		settingsDialog.close();
+	}
+
+	if (settingsDialog) {
+		settingsDialog.onclose = () => {
+			const currentSnapshot = getServerPrefsSnapshot();
+			if (serverSnapshot !== null && serverSnapshot !== currentSnapshot) {
+				window.location.reload();
+			}
+		};
+
+		settingsDialog.onclick = (e) => {
+			if (e.target === settingsDialog) {
+				closeSettingsDialog();
+			}
+		};
+	}
+
+	if (settingsToggle) settingsToggle.onclick = () => openSettingsDialog();
+	if (settingsCloseBtn) settingsCloseBtn.onclick = closeSettingsDialog;
+	if (settingsDoneBtn) settingsDoneBtn.onclick = closeSettingsDialog;
+	if (blockedTagsBtn) blockedTagsBtn.onclick = () => openSettingsDialog(document.getElementById("blocklist-input"));
+
+	// Dialog Interactive Controls
+	document.querySelectorAll("#setting-theme .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.theme = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-theme", currentSettings.theme);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-view-mode .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.viewMode = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-view-mode", currentSettings.viewMode);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-thumb-fit .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.thumbFit = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-thumb-fit", currentSettings.thumbFit);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-enable-lightbox .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.enableLightbox = btn.dataset.value === "true";
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-enable-lightbox", currentSettings.enableLightbox ? "true" : "false");
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	const settingMaxCols = document.getElementById("setting-max-cols");
+	if (settingMaxCols) {
+		settingMaxCols.oninput = () => {
+			const val = parseInt(settingMaxCols.value, 10);
+			currentSettings.maxColumns = val;
+			const valBadge = document.getElementById("setting-max-cols-val");
+			if (valBadge) valBadge.textContent = `${val} cols`;
+			saveSettings(currentSettings);
+			updateSettingsJsonTextarea();
+		};
+	}
+
+	const settingMinWidth = document.getElementById("setting-min-width");
+	if (settingMinWidth) {
+		settingMinWidth.oninput = () => {
+			const val = parseInt(settingMinWidth.value, 10);
+			currentSettings.minColumnWidth = val;
+			const valBadge = document.getElementById("setting-min-width-val");
+			if (valBadge) valBadge.textContent = `${val}px`;
+			saveSettings(currentSettings);
+			updateSettingsJsonTextarea();
+		};
+	}
+
+	document.querySelectorAll("#setting-sort-browse .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			if (!currentSettings.defaultSort) currentSettings.defaultSort = {};
+			currentSettings.defaultSort.browse = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-sort-browse", currentSettings.defaultSort.browse);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-window-popular .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.defaultWindow.popular = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-window-popular", currentSettings.defaultWindow.popular);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-window-browse .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.defaultWindow.browse = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-window-browse", currentSettings.defaultWindow.browse);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-default-rating .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.defaultRating = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-default-rating", currentSettings.defaultRating);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	document.querySelectorAll("#setting-zoom-mode .segmented-btn").forEach((btn) => {
+		btn.onclick = () => {
+			currentSettings.zoomMode = btn.dataset.value;
+			saveSettings(currentSettings);
+			setSegmentedActive("setting-zoom-mode", currentSettings.zoomMode);
+			updateSettingsJsonTextarea();
+		};
+	});
+
+	const preferHdInput = document.getElementById("setting-prefer-hd");
+	if (preferHdInput) {
+		preferHdInput.onchange = (e) => {
+			currentSettings.preferHD = e.target.checked;
+			saveSettings(currentSettings);
+			updateSettingsJsonTextarea();
+		};
+	}
+
+	const singleAutoplayInput = document.getElementById("setting-single-autoplay");
+	if (singleAutoplayInput) {
+		singleAutoplayInput.onchange = (e) => {
+			currentSettings.singleAutoplay = e.target.checked;
+			saveSettings(currentSettings);
+			updateSettingsJsonTextarea();
+		};
+	}
+
+	const blocklistInput = document.getElementById("blocklist-input");
+	const blocklistAddBtn = document.getElementById("blocklist-add-btn");
+	const blocklistSuggestions = document.getElementById("blocklist-suggestions");
+
+	function addBlocklistTag(tag) {
+		tag = (tag || "").toLowerCase().trim().replace(/^-+/, "");
+		if (!tag) return;
+		if (!currentSettings.blockedTags.includes(tag)) {
+			currentSettings.blockedTags.push(tag);
+			saveSettings(currentSettings);
+			renderBlocklistChips();
+			updateSettingsJsonTextarea();
+		}
+		if (blocklistInput) blocklistInput.value = "";
+		if (blocklistSuggestions) {
+			blocklistSuggestions.innerHTML = "";
+		}
+	}
+
+	if (blocklistAddBtn) {
+		blocklistAddBtn.onclick = () => {
+			if (blocklistInput) addBlocklistTag(blocklistInput.value);
+		};
+	}
+
+	bindAutocompleteBox(blocklistInput, blocklistSuggestions, (item) => {
+		const tag = item.dataset.addBlockTag;
+		if (tag) {
+			addBlocklistTag(tag);
+		}
+		blocklistInput?.focus();
+	});
+
+	const jsonApplyBtn = document.getElementById("settings-json-apply-btn");
+	if (jsonApplyBtn) {
+		jsonApplyBtn.onclick = () => {
+			const ta = document.getElementById("settings-json-textarea");
+			if (!ta) return;
+			try {
+				const parsed = JSON.parse(ta.value);
+				const merged = {
+					...DEFAULT_SETTINGS,
+					...parsed,
+					thumbFit: parsed.thumbFit === "contain" ? "contain" : "cover",
+					enableLightbox: parsed.enableLightbox !== false,
+					defaultWindow: { ...DEFAULT_SETTINGS.defaultWindow, ...(parsed.defaultWindow || {}) },
+					defaultSort: { ...DEFAULT_SETTINGS.defaultSort, ...(parsed.defaultSort || {}) },
+					blockedTags: Array.isArray(parsed.blockedTags) ? parsed.blockedTags : []
+				};
+				saveSettings(merged);
+				syncSettingsDialogUI();
+			} catch (err) {
+				alert("Invalid JSON: " + err.message);
+			}
+		};
+	}
+
+	if (settingsResetBtn) {
+		settingsResetBtn.onclick = () => {
+			if (confirm("Reset all settings & preferences to defaults?")) {
+				saveSettings(structuredClone(DEFAULT_SETTINGS));
+				syncSettingsDialogUI();
+			}
+		};
+	}
+
+	syncSettingsDialogUI();
+}
 
 // Reusable HTMX autocomplete box keyboard navigation and selection handler
 function bindAutocompleteBox(inputEl, boxEl, onSelect) {
@@ -565,190 +587,134 @@ function bindAutocompleteBox(inputEl, boxEl, onSelect) {
 		boxEl.innerHTML = "";
 		activeIdx = -1;
 	});
-
-	document.addEventListener("click", (e) => {
-		if (!boxEl.contains(e.target) && e.target !== inputEl) {
-			boxEl.innerHTML = "";
-			activeIdx = -1;
-		}
-	});
 }
 
-bindAutocompleteBox(blocklistInput, blocklistSuggestions, (item) => {
-	const tag = item.dataset.addBlockTag;
-	if (tag) {
-		addBlocklistTag(tag);
-	}
-	blocklistInput?.focus();
-});
+function initSearchUI() {
+	const searchInput = document.getElementById("tag-search-input");
+	const suggestionsBox = document.getElementById("tag-suggestions");
 
-document.getElementById("settings-json-apply-btn")?.addEventListener("click", () => {
-	const ta = document.getElementById("settings-json-textarea");
-	if (!ta) return;
-	try {
-		const parsed = JSON.parse(ta.value);
-		const merged = {
-			...DEFAULT_SETTINGS,
-			...parsed,
-			thumbFit: parsed.thumbFit === "contain" ? "contain" : "cover",
-			enableLightbox: parsed.enableLightbox !== false,
-			defaultWindow: { ...DEFAULT_SETTINGS.defaultWindow, ...(parsed.defaultWindow || {}) },
-			defaultSort: { ...DEFAULT_SETTINGS.defaultSort, ...(parsed.defaultSort || {}) },
-			blockedTags: Array.isArray(parsed.blockedTags) ? parsed.blockedTags : []
+	function getSearchTokens() {
+		if (!searchInput) return [];
+		return searchInput.value.trim().split(/\s+/).filter(Boolean);
+	}
+
+	// Highlight and toggle quick tag chips
+	const currentTokens = getSearchTokens();
+	document.querySelectorAll(".tag-chip[data-tag]").forEach((btn) => {
+		const tag = btn.dataset.tag;
+		if (currentTokens.includes(tag)) {
+			btn.classList.add("active");
+			btn.setAttribute("aria-pressed", "true");
+		} else {
+			btn.setAttribute("aria-pressed", "false");
+		}
+
+		btn.onclick = (e) => {
+			if (!searchInput) return;
+			e.preventDefault();
+			let tokens = getSearchTokens();
+			if (tokens.includes(tag)) {
+				tokens = tokens.filter((t) => t !== tag && t !== "-" + tag);
+			} else {
+				tokens.push(tag);
+			}
+			searchInput.value = tokens.join(" ") + (tokens.length > 0 ? " " : "");
+			searchInput.form?.submit();
 		};
-		saveSettings(merged);
-		syncSettingsDialogUI();
-	} catch (err) {
-		alert("Invalid JSON: " + err.message);
-	}
-});
-
-settingsResetBtn?.addEventListener("click", () => {
-	if (confirm("Reset all settings & preferences to defaults?")) {
-		saveSettings(structuredClone(DEFAULT_SETTINGS));
-		syncSettingsDialogUI();
-	}
-});
-
-const searchInput = document.getElementById("tag-search-input");
-const suggestionsBox = document.getElementById("tag-suggestions");
-
-// Parse currently active tags in search input
-function getSearchTokens() {
-	if (!searchInput) return [];
-	return searchInput.value.trim().split(/\s+/).filter(Boolean);
-}
-
-// Highlight and toggle quick tag chips
-const currentTokens = getSearchTokens();
-document.querySelectorAll(".tag-chip[data-tag]").forEach((btn) => {
-	const tag = btn.dataset.tag;
-	if (currentTokens.includes(tag)) {
-		btn.classList.add("active");
-		btn.setAttribute("aria-pressed", "true");
-	} else {
-		btn.setAttribute("aria-pressed", "false");
-	}
-
-	btn.addEventListener("click", (e) => {
-		if (!searchInput) return;
-		e.preventDefault();
-		let tokens = getSearchTokens();
-		if (tokens.includes(tag)) {
-			tokens = tokens.filter((t) => t !== tag && t !== "-" + tag);
-		} else {
-			tokens.push(tag);
-		}
-		searchInput.value = tokens.join(" ") + (tokens.length > 0 ? " " : "");
-		searchInput.form?.submit();
 	});
-});
 
-// Clickable active tag badges in results summary remove tag on click
-document.querySelectorAll(".active-tag[data-remove-tag]").forEach((btn) => {
-	btn.addEventListener("click", (e) => {
-		if (!searchInput) return;
-		e.preventDefault();
-		const removeTag = btn.dataset.removeTag;
-		let tokens = getSearchTokens().filter((t) => t !== removeTag && t !== "-" + removeTag);
-		searchInput.value = tokens.join(" ") + (tokens.length > 0 ? " " : "");
-		searchInput.form?.submit();
+	// Clickable active tag badges in results summary remove tag on click
+	document.querySelectorAll(".active-tag[data-remove-tag]").forEach((btn) => {
+		btn.onclick = (e) => {
+			if (!searchInput) return;
+			e.preventDefault();
+			const removeTag = btn.dataset.removeTag;
+			let tokens = getSearchTokens().filter((t) => t !== removeTag && t !== "-" + removeTag);
+			searchInput.value = tokens.join(" ") + (tokens.length > 0 ? " " : "");
+			searchInput.form?.submit();
+		};
 	});
-});
 
-// Bind HTMX autocomplete for main search input
-bindAutocompleteBox(searchInput, suggestionsBox, (item) => {
-	const replacement = item.dataset.setValue;
-	if (replacement) {
-		searchInput.value = replacement;
-	}
-	searchInput.focus();
-});
-
-// Mobile Search & Filter Overlay
-const mobileFilterCheckbox = document.getElementById("mobile-filter-state");
-const mobileFilterToggle = document.getElementById("mobile-filter-toggle");
-const indexSidebar = document.getElementById("index-sidebar");
-const mobileFilterClose = document.getElementById("mobile-filter-close");
-
-if (mobileFilterToggle && indexSidebar) {
-	function syncDrawerState(isOpen, fromHistory = false) {
-		if (mobileFilterCheckbox) {
-			mobileFilterCheckbox.checked = isOpen;
+	// Bind HTMX autocomplete for main search input
+	bindAutocompleteBox(searchInput, suggestionsBox, (item) => {
+		const replacement = item.dataset.setValue;
+		if (replacement) {
+			searchInput.value = replacement;
 		}
-		if (isOpen) {
-			document.body.classList.remove("topbar-hidden");
-			indexSidebar.classList.add("is-open");
-			document.body.classList.add("filter-open");
-			mobileFilterToggle.setAttribute("aria-expanded", "true");
-			if (!fromHistory) {
-				window.history.pushState({ mobileFilter: true }, "");
+		searchInput.focus();
+	});
+
+	// Mobile Search & Filter Overlay
+	const mobileFilterCheckbox = document.getElementById("mobile-filter-state");
+	const mobileFilterToggle = document.getElementById("mobile-filter-toggle");
+	const indexSidebar = document.getElementById("index-sidebar");
+	const mobileFilterClose = document.getElementById("mobile-filter-close");
+
+	if (mobileFilterToggle && indexSidebar) {
+		function syncDrawerState(isOpen, fromHistory = false) {
+			if (mobileFilterCheckbox) {
+				mobileFilterCheckbox.checked = isOpen;
 			}
-		} else {
-			indexSidebar.classList.remove("is-open");
-			document.body.classList.remove("filter-open");
-			mobileFilterToggle.setAttribute("aria-expanded", "false");
-			if (!fromHistory && window.history.state?.mobileFilter) {
-				window.history.back();
+			if (isOpen) {
+				document.body.classList.remove("topbar-hidden");
+				indexSidebar.classList.add("is-open");
+				document.body.classList.add("filter-open");
+				mobileFilterToggle.setAttribute("aria-expanded", "true");
+				if (!fromHistory) {
+					window.history.pushState({ mobileFilter: true }, "");
+				}
+			} else {
+				indexSidebar.classList.remove("is-open");
+				document.body.classList.remove("filter-open");
+				mobileFilterToggle.setAttribute("aria-expanded", "false");
+				if (!fromHistory && window.history.state?.mobileFilter) {
+					window.history.back();
+				}
 			}
 		}
-	}
 
-	mobileFilterToggle.addEventListener("click", (e) => {
-		e.preventDefault();
-		const nextState = !mobileFilterCheckbox?.checked;
-		syncDrawerState(nextState);
-	});
+		window.__hypnogazeSyncDrawer = syncDrawerState;
 
-	mobileFilterClose?.addEventListener("click", (e) => {
-		e.preventDefault();
-		syncDrawerState(false);
-	});
-
-	// Keyboard accessibility for label buttons (Enter / Space)
-	mobileFilterToggle.addEventListener("keydown", (e) => {
-		if (e.key === " " || e.key === "Enter") {
+		mobileFilterToggle.onclick = (e) => {
 			e.preventDefault();
 			const nextState = !mobileFilterCheckbox?.checked;
 			syncDrawerState(nextState);
-		}
-	});
+		};
 
-	mobileFilterClose?.addEventListener("keydown", (e) => {
-		if (e.key === " " || e.key === "Enter") {
-			e.preventDefault();
-			syncDrawerState(false);
+		if (mobileFilterClose) {
+			mobileFilterClose.onclick = (e) => {
+				e.preventDefault();
+				syncDrawerState(false);
+			};
 		}
-	});
 
-	// Close on backdrop click (clicking outside .controls-panel)
-	indexSidebar.addEventListener("click", (e) => {
-		if (e.target === indexSidebar || e.target.classList.contains("mobile-sidebar-backdrop")) {
-			syncDrawerState(false);
-		}
-	});
+		// Keyboard accessibility for label buttons (Enter / Space)
+		mobileFilterToggle.onkeydown = (e) => {
+			if (e.key === " " || e.key === "Enter") {
+				e.preventDefault();
+				const nextState = !mobileFilterCheckbox?.checked;
+				syncDrawerState(nextState);
+			}
+		};
 
-	// Popstate handler for mobile filter Back button
-	window.addEventListener("popstate", () => {
-		if (mobileFilterCheckbox?.checked || indexSidebar.classList.contains("is-open")) {
-			syncDrawerState(false, true);
+		if (mobileFilterClose) {
+			mobileFilterClose.onkeydown = (e) => {
+				if (e.key === " " || e.key === "Enter") {
+					e.preventDefault();
+					syncDrawerState(false);
+				}
+			};
 		}
-	});
 
-	// Escape key closes mobile filter if open
-	document.addEventListener("keydown", (e) => {
-		if (e.key === "Escape" && (mobileFilterCheckbox?.checked || indexSidebar.classList.contains("is-open"))) {
-			e.preventDefault();
-			syncDrawerState(false);
-		}
-	});
-
-	// Automatically clean up mobile filter state if viewport is resized to desktop (>= 960px)
-	window.addEventListener("resize", () => {
-		if (window.matchMedia("(min-width: 960px)").matches && (mobileFilterCheckbox?.checked || indexSidebar.classList.contains("is-open"))) {
-			syncDrawerState(false, true);
-		}
-	});
+		// Close on backdrop click (clicking outside .controls-panel)
+		indexSidebar.onclick = (e) => {
+			if (e.target === indexSidebar || e.target.classList.contains("mobile-sidebar-backdrop")) {
+				syncDrawerState(false);
+			}
+		};
+	} else {
+		window.__hypnogazeSyncDrawer = null;
+	}
 }
 
 // Unified Zoomable Media Viewer & Lightbox Implementation
@@ -792,328 +758,307 @@ function createZoomableMediaViewer(options) {
 	let currentPost = null;
 	let currentThumbSrc = "";
 	let isZoomed = false;
-	let currentZoomScale = 1;
-
+	let scale = 1;
+	let translateX = 0;
+	let translateY = 0;
 	let isDragging = false;
-	let startX = 0, startY = 0;
-	let scrollStartX = 0, scrollStartY = 0;
+	let startPointerX = 0;
+	let startPointerY = 0;
+	let startTransX = 0;
+	let startTransY = 0;
 	let didDrag = false;
-	let targetW = 0, targetH = 0;
+	let activePointers = new Map();
+	let pinchStartDist = 0;
+	let pinchStartScale = 1;
+	let pinchCenterStageX = 0;
+	let pinchCenterStageY = 0;
 
-	function resetZoom() {
-		isZoomed = false;
-		currentZoomScale = 1;
-		targetW = 0;
-		targetH = 0;
-		stage.classList.remove("is-zoomed", "is-dragging");
-		stage.style.removeProperty("--zoomed-w");
-		stage.style.removeProperty("--zoomed-h");
-		if (zoomToggleBtn) {
-			zoomToggleBtn.textContent = "Fit";
-			zoomToggleBtn.classList.remove("active");
+	function isVideo() {
+		return currentPost && (currentPost.ext === "mp4" || currentPost.ext === "webm");
+	}
+
+	function getMediaElement() {
+		return mediaWrap.querySelector(".lightbox-media, .detail-media");
+	}
+
+	function getNaturalDimensions() {
+		const mediaEl = getMediaElement();
+		const nw = currentPost?.width || mediaEl?.naturalWidth || mediaEl?.videoWidth || 0;
+		const nh = currentPost?.height || mediaEl?.naturalHeight || mediaEl?.videoHeight || 0;
+		return { nw, nh };
+	}
+
+	function updateTransform() {
+		const mediaEl = getMediaElement();
+		if (!mediaEl) return;
+		if (isZoomed) {
+			stage.classList.add("is-zoomed");
+			mediaWrap.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
+			if (zoomToggleBtn) {
+				zoomToggleBtn.classList.add("active");
+				zoomToggleBtn.setAttribute("aria-pressed", "true");
+				const icon = zoomToggleBtn.querySelector(".material-symbols-rounded");
+				if (icon) icon.textContent = "zoom_out";
+			}
+		} else {
+			stage.classList.remove("is-zoomed");
+			mediaWrap.style.transform = "none";
+			if (zoomToggleBtn) {
+				zoomToggleBtn.classList.remove("active");
+				zoomToggleBtn.setAttribute("aria-pressed", "false");
+				const icon = zoomToggleBtn.querySelector(".material-symbols-rounded");
+				if (icon) icon.textContent = "zoom_in";
+			}
 		}
 	}
 
-	function toggleZoom(clickX, clickY) {
-		if (isZoomed) {
+	function clampTranslation() {
+		const mediaEl = getMediaElement();
+		if (!mediaEl) return;
+		const stageRect = stage.getBoundingClientRect();
+		const baseRect = getRenderedMediaRect(stage, mediaEl, currentPost?.width, currentPost?.height);
+		const curW = baseRect.width * scale;
+		const curH = baseRect.height * scale;
+
+		let maxOffsetX = Math.max(0, (curW - stageRect.width) / 2);
+		let maxOffsetY = Math.max(0, (curH - stageRect.height) / 2);
+
+		translateX = Math.max(-maxOffsetX, Math.min(maxOffsetX, translateX));
+		translateY = Math.max(-maxOffsetY, Math.min(maxOffsetY, translateY));
+	}
+
+	function zoomToPoint(targetScale, clientX, clientY) {
+		const mediaEl = getMediaElement();
+		if (!mediaEl) return;
+		const stageRect = stage.getBoundingClientRect();
+		const cx = clientX !== undefined ? (clientX - stageRect.left - stageRect.width / 2) : 0;
+		const cy = clientY !== undefined ? (clientY - stageRect.top - stageRect.height / 2) : 0;
+
+		const prevScale = scale;
+		scale = Math.max(1, Math.min(10, targetScale));
+
+		if (scale <= 1.02) {
 			resetZoom();
 			return;
 		}
-		if (!currentPost) return;
-		const ext = (currentPost.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") return;
 
-		const postW = parseInt(currentPost.width, 10) || 1000;
-		const postH = parseInt(currentPost.height, 10) || 1000;
-		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
-		const r = getRenderedMediaRect(stage, activeImg, postW, postH);
-		const sw = stage.clientWidth;
-		const sh = stage.clientHeight;
-		const ar = postW / postH;
-
-		const zoomMode = currentSettings.zoomMode || "fill-width";
-		const maxWidthCap = Math.min(sw, 1000);
-
-		let computedW;
-		if (zoomMode === "original") {
-			computedW = Math.min(postW, maxWidthCap);
-		} else if (zoomMode === "2x") {
-			computedW = Math.min(Math.round(r.width * 2), maxWidthCap);
-		} else if (zoomMode === "3x") {
-			computedW = Math.min(Math.round(r.width * 3), maxWidthCap);
-		} else {
-			// "fill-width" default: fills stage width (or at least capped container on detail)
-			computedW = maxWidthCap;
-		}
-
-		if (computedW <= r.width + 1) return; // already at or above target width; don't enter a no-op zoom state
-
-		targetW = Math.round(computedW);
-		targetH = Math.round(targetW / ar);
-
-		currentZoomScale = r.width > 0 ? (targetW / r.width) : 1;
 		isZoomed = true;
-		stage.classList.add("is-zoomed");
-		stage.style.setProperty("--zoomed-w", `${targetW}px`);
-		stage.style.setProperty("--zoomed-h", `${targetH}px`);
+		const factor = scale / prevScale;
+		translateX = (translateX - cx) * factor + cx;
+		translateY = (translateY - cy) * factor + cy;
+		clampTranslation();
+		updateTransform();
+	}
 
-		if (zoomToggleBtn) {
-			zoomToggleBtn.textContent = `${Math.round(currentZoomScale * 100)}%`;
-			zoomToggleBtn.classList.add("active");
-		}
+	function resetZoom() {
+		isZoomed = false;
+		scale = 1;
+		translateX = 0;
+		translateY = 0;
+		updateTransform();
+	}
 
-		if (clickX !== undefined && clickY !== undefined) {
-			const u = Math.max(0, Math.min(1, (clickX - r.left) / (r.width || 1)));
-			const v = Math.max(0, Math.min(1, (clickY - r.top) / (r.height || 1)));
-			requestAnimationFrame(() => {
-				stage.scrollLeft = (u * targetW) - (clickX - stage.getBoundingClientRect().left);
-				stage.scrollTop = (v * targetH) - (clickY - stage.getBoundingClientRect().top);
-			});
+	function toggleZoom(clientX, clientY) {
+		if (isZoomed) {
+			resetZoom();
 		} else {
-			requestAnimationFrame(() => {
-				stage.scrollLeft = (targetW - sw) / 2;
-				stage.scrollTop = (targetH - sh) / 2;
-			});
-		}
-	}
+			const { nw } = getNaturalDimensions();
+			const mediaEl = getMediaElement();
+			const baseRect = getRenderedMediaRect(stage, mediaEl, currentPost?.width, currentPost?.height);
+			let targetScale = 2.5;
 
-	function onMouseDown(e) {
-		if (!isZoomed || e.button !== 0) return;
-		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a")) return;
-		isDragging = true;
-		didDrag = false;
-		startX = e.clientX;
-		startY = e.clientY;
-		scrollStartX = stage.scrollLeft;
-		scrollStartY = stage.scrollTop;
-	}
-
-	function onWindowMouseMove(e) {
-		if (!isDragging) return;
-		const dx = e.clientX - startX;
-		const dy = e.clientY - startY;
-		if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-			didDrag = true;
-			stage.classList.add("is-dragging");
-		}
-		stage.scrollLeft = scrollStartX - dx;
-		stage.scrollTop = scrollStartY - dy;
-	}
-
-	function onWindowMouseUp() {
-		if (isDragging) {
-			isDragging = false;
-			stage.classList.remove("is-dragging");
-		}
-	}
-
-	function onMouseMove(e) {
-		if (isZoomed) {
-			if (!isDragging) {
-				const rect = mediaWrap.getBoundingClientRect();
-				const inMedia = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
-				stage.style.cursor = inMedia ? "zoom-out" : (onOutsideClick ? "pointer" : "zoom-out");
+			if (currentSettings.zoomMode === "original" && nw && baseRect.width > 0) {
+				targetScale = Math.max(1.5, nw / baseRect.width);
+			} else if (currentSettings.zoomMode === "2x") {
+				targetScale = 2.0;
+			} else {
+				const stageRect = stage.getBoundingClientRect();
+				targetScale = Math.max(2.0, stageRect.width / (baseRect.width || 1));
 			}
-			return;
-		}
-		if (!currentPost) return;
-		const ext = (currentPost.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") {
-			stage.style.cursor = "default";
-			return;
-		}
-		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
-		const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
-		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-		stage.style.cursor = inImage ? "zoom-in" : (onOutsideClick ? "pointer" : "default");
-	}
 
-	function onWheel(e) {
-		if (!isMediaActive()) return;
-		if (!currentPost) return;
-		const ext = (currentPost.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") return;
-
-		if (e.ctrlKey || isZoomed) {
-			e.preventDefault();
-			const delta = -e.deltaY * 0.002;
-			const postW = parseInt(currentPost.width, 10) || 1000;
-			const postH = parseInt(currentPost.height, 10) || 1000;
-			const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
-			const r = getRenderedMediaRect(stage, activeImg, postW, postH);
-			const sw = stage.clientWidth;
-			const ar = postW / postH;
-			const maxWidthCap = Math.min(sw, 1000);
-			if (!isZoomed && r.width >= maxWidthCap) return;
-
-			const baseW = isZoomed && targetW > 0 ? (targetW / currentZoomScale) : r.width;
-			let newScale = (isZoomed ? currentZoomScale : 1) + delta;
-			if (newScale < 1.05) {
-				resetZoom();
-				return;
-			}
-			if (newScale > 5) newScale = 5;
-
-			const computedW = Math.min(Math.round(baseW * newScale), maxWidthCap);
-			newScale = baseW > 0 ? computedW / baseW : newScale;
-			const computedH = Math.round(computedW / ar);
-
-			targetW = computedW;
-			targetH = computedH;
-			currentZoomScale = newScale;
-			isZoomed = true;
-			stage.classList.add("is-zoomed");
-			stage.style.setProperty("--zoomed-w", `${targetW}px`);
-			stage.style.setProperty("--zoomed-h", `${targetH}px`);
-			if (zoomToggleBtn) {
-				zoomToggleBtn.textContent = `${Math.round(currentZoomScale * 100)}%`;
-				zoomToggleBtn.classList.add("active");
-			}
+			targetScale = Math.min(targetScale, 6.0);
+			zoomToPoint(targetScale, clientX, clientY);
 		}
 	}
 
-	function onClick(e) {
-		if (didDrag) {
-			didDrag = false;
-			return;
-		}
-		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a") || e.target.closest("video")) {
-			return;
-		}
-
-		if (!currentPost) return;
-		const ext = (currentPost.ext || "").toLowerCase();
-		const isVideo = ext === "mp4" || ext === "webm";
-
-		if (isVideo) {
-			if (onOutsideClick) onOutsideClick();
-			return;
-		}
-
-		let inMedia = false;
-		if (isZoomed) {
-			const mr = mediaWrap.getBoundingClientRect();
-			inMedia = e.clientX >= mr.left && e.clientX <= mr.right && e.clientY >= mr.top && e.clientY <= mr.bottom;
-		} else {
-			const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
-			const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
-			inMedia = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-		}
-
-		// Clicking outside the rendered media in lightbox closes the lightbox even when zoomed
-		if (!inMedia && onOutsideClick) {
-			onOutsideClick();
-			return;
-		}
-
-		if (isZoomed) {
-			toggleZoom();
-			return;
-		}
-
-		if (inMedia) {
-			toggleZoom(e.clientX, e.clientY);
+	function setHdActive(active) {
+		if (!hdToggleBtn) return;
+		hdToggleBtn.classList.toggle("active", active);
+		hdToggleBtn.setAttribute("aria-pressed", active ? "true" : "false");
+		const icon = hdToggleBtn.querySelector(".material-symbols-rounded");
+		if (icon) {
+			icon.textContent = active ? "hd" : "sd";
 		}
 	}
 
-	function loadMedia(postData, thumbSrc) {
-		currentPost = postData;
-		currentThumbSrc = thumbSrc;
+	function setMedia(post, initialThumbSrc) {
+		currentPost = post;
+		currentThumbSrc = initialThumbSrc || post.previewUrl || post.sampleUrl;
 		resetZoom();
 
-		const ext = (postData.ext || "").toLowerCase();
 		mediaWrap.innerHTML = "";
+		const ext = (post.ext || "").toLowerCase();
+		const preferHD = currentSettings.preferHD;
 
 		if (ext === "mp4" || ext === "webm") {
-			if (zoomToggleBtn) zoomToggleBtn.style.display = "none";
-			if (hdToggleBtn) hdToggleBtn.style.display = "none";
-
+			setHdActive(true);
 			const video = document.createElement("video");
-			video.src = postData.fileUrl;
-			const cachedThumb = thumbSrc || postData.sampleUrl || postData.previewUrl;
-			if (cachedThumb) video.poster = cachedThumb;
+			video.className = stage.id === "lightbox-stage" ? "lightbox-media" : "detail-media";
 			video.controls = true;
 			video.autoplay = true;
 			video.loop = true;
 			video.playsInline = true;
-			video.className = "detail-media";
+			video.setAttribute("playsinline", "");
+			video.setAttribute("webkit-playsinline", "");
+			if (currentThumbSrc) {
+				video.poster = currentThumbSrc;
+			}
+			video.src = post.fileUrl;
 			mediaWrap.appendChild(video);
+			video.play().catch(() => {});
+		} else {
+			const displayUrl = (preferHD || !post.sampleUrl) ? post.fileUrl : post.sampleUrl;
+			setHdActive(displayUrl === post.fileUrl);
+
+			const img = document.createElement("img");
+			img.className = stage.id === "lightbox-stage" ? "lightbox-media" : "detail-media";
+			img.alt = post.tags || `Post #${post.id}`;
+			if (post.width && post.height) {
+				img.width = post.width;
+				img.height = post.height;
+			}
+
+			if (currentThumbSrc && currentThumbSrc !== displayUrl) {
+				img.src = currentThumbSrc;
+				img.classList.add("is-thumb-preview");
+				const fullImg = new Image();
+				fullImg.src = displayUrl;
+				fullImg.onload = () => {
+					if (currentPost?.id === post.id) {
+						img.src = displayUrl;
+						img.classList.remove("is-thumb-preview");
+					}
+				};
+			} else {
+				img.src = displayUrl;
+			}
+
+			mediaWrap.appendChild(img);
+		}
+	}
+
+	function onPointerDown(e) {
+		if (!isMediaActive()) return;
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		if (activePointers.size === 1) {
+			isDragging = true;
+			didDrag = false;
+			startPointerX = e.clientX;
+			startPointerY = e.clientY;
+			startTransX = translateX;
+			startTransY = translateY;
+			stage.setPointerCapture(e.pointerId);
+		} else if (activePointers.size === 2) {
+			const pts = Array.from(activePointers.values());
+			pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+			pinchStartScale = scale;
+			const stageRect = stage.getBoundingClientRect();
+			pinchCenterStageX = ((pts[0].x + pts[1].x) / 2) - stageRect.left - stageRect.width / 2;
+			pinchCenterStageY = ((pts[0].y + pts[1].y) / 2) - stageRect.top - stageRect.height / 2;
+		}
+	}
+
+	function onPointerMove(e) {
+		if (!activePointers.has(e.pointerId)) return;
+		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		if (activePointers.size === 2) {
+			const pts = Array.from(activePointers.values());
+			const curDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+			if (pinchStartDist > 0) {
+				const newScale = Math.max(1, Math.min(8, pinchStartScale * (curDist / pinchStartDist)));
+				scale = newScale;
+				isZoomed = scale > 1.05;
+				clampTranslation();
+				updateTransform();
+			}
+			didDrag = true;
 			return;
 		}
 
-		if (zoomToggleBtn) {
-			zoomToggleBtn.style.display = "";
-			zoomToggleBtn.textContent = "Fit";
-			zoomToggleBtn.classList.remove("active");
+		if (isDragging && isZoomed) {
+			const dx = e.clientX - startPointerX;
+			const dy = e.clientY - startPointerY;
+			if (Math.hypot(dx, dy) > 5) {
+				didDrag = true;
+			}
+			translateX = startTransX + dx;
+			translateY = startTransY + dy;
+			clampTranslation();
+			updateTransform();
 		}
-
-		const preferHD = currentSettings.preferHD ?? true;
-		const hasDistinctSample = postData.sampleUrl && postData.sampleUrl !== postData.fileUrl && ext !== "gif";
-		if (hdToggleBtn) {
-			hdToggleBtn.style.display = hasDistinctSample ? "" : "none";
-			hdToggleBtn.textContent = preferHD ? "HD" : "Sample";
-			hdToggleBtn.classList.toggle("active", preferHD);
-			hdToggleBtn.title = preferHD ? "Switch to Sample resolution" : "Switch to HD original resolution";
-		}
-
-		const targetURL = preferHD || ext === "gif" ? postData.fileUrl : (postData.sampleUrl || postData.fileUrl);
-		const cachedThumb = thumbSrc || postData.sampleUrl || postData.previewUrl;
-
-		const container = document.createElement("div");
-		container.className = "progressive-media-container lb-progressive-container";
-		if (postData.width && postData.height) {
-			container.style.setProperty("--media-ar", `${postData.width} / ${postData.height}`);
-		}
-
-		// 1. Base layer: cached thumbnail (instant)
-		const previewImg = document.createElement("img");
-		previewImg.className = "img-preview lb-img-preview";
-		previewImg.src = cachedThumb;
-		previewImg.alt = `Post #${postData.id}`;
-		previewImg.referrerPolicy = "no-referrer";
-		container.appendChild(previewImg);
-
-		// 2. Loading spinner
-		const loader = document.createElement("div");
-		loader.className = "media-loader lb-loader";
-		loader.setAttribute("aria-hidden", "true");
-		container.appendChild(loader);
-
-		// 3. High-res target image preloaded in background
-		const fullImg = new Image();
-		fullImg.className = "img-full lb-img-full";
-		fullImg.referrerPolicy = "no-referrer";
-		fullImg.alt = `Post #${postData.id}`;
-
-		const onReady = () => {
-			loader.remove();
-			fullImg.classList.add("is-loaded");
-			previewImg.classList.add("is-hidden");
-		};
-
-		fullImg.src = targetURL;
-		container.appendChild(fullImg);
-
-		if (fullImg.complete) {
-			onReady();
-		} else {
-			fullImg.decode?.().then(onReady).catch(() => {
-				fullImg.onload = onReady;
-			});
-			fullImg.onerror = () => {
-				loader.remove();
-			};
-		}
-
-		mediaWrap.appendChild(container);
 	}
 
-	stage.addEventListener("mousedown", onMouseDown);
-	window.addEventListener("mousemove", onWindowMouseMove);
-	window.addEventListener("mouseup", onWindowMouseUp);
-	stage.addEventListener("mousemove", onMouseMove);
-	stage.addEventListener("wheel", onWheel, { passive: false });
-	stage.addEventListener("click", onClick);
+	function onPointerUp(e) {
+		if (activePointers.has(e.pointerId)) {
+			try {
+				stage.releasePointerCapture(e.pointerId);
+			} catch (_) {}
+			activePointers.delete(e.pointerId);
+		}
+		if (activePointers.size === 0) {
+			isDragging = false;
+			if (scale <= 1.05) {
+				resetZoom();
+			}
+		}
+	}
+
+	let lastTapTime = 0;
+	function onStageClick(e) {
+		if (!isMediaActive()) return;
+		if (didDrag) {
+			didDrag = false;
+			return;
+		}
+
+		if (e.target.closest("button, a, input, video")) {
+			return;
+		}
+
+		const mediaEl = getMediaElement();
+		const mediaRect = mediaEl ? getRenderedMediaRect(stage, mediaEl, currentPost?.width, currentPost?.height) : null;
+		const clickedOutsideMedia = mediaRect ? (
+			e.clientX < mediaRect.left ||
+			e.clientX > mediaRect.right ||
+			e.clientY < mediaRect.top ||
+			e.clientY > mediaRect.bottom
+		) : true;
+
+		if (clickedOutsideMedia && onOutsideClick) {
+			onOutsideClick();
+			return;
+		}
+
+		const now = Date.now();
+		if (now - lastTapTime < 320) {
+			lastTapTime = 0;
+			toggleZoom(e.clientX, e.clientY);
+		} else {
+			lastTapTime = now;
+		}
+	}
+
+	function onWheel(e) {
+		if (!isMediaActive()) return;
+		if (e.ctrlKey || e.metaKey || isZoomed) {
+			e.preventDefault();
+			const delta = -e.deltaY;
+			const zoomFactor = delta > 0 ? 1.15 : 0.87;
+			zoomToPoint(scale * zoomFactor, e.clientX, e.clientY);
+		}
+	}
 
 	function onZoomToggleClick(e) {
 		e.stopPropagation();
@@ -1122,31 +1067,44 @@ function createZoomableMediaViewer(options) {
 
 	function onHdToggleClick(e) {
 		e.stopPropagation();
-		const preferHD = !(currentSettings.preferHD ?? true);
-		currentSettings.preferHD = preferHD;
-		saveSettings(currentSettings);
-		if (currentPost) {
-			loadMedia(currentPost, currentThumbSrc);
+		if (!currentPost || isVideo()) return;
+		const img = getMediaElement();
+		if (!img) return;
+
+		const isCurrentlyHD = hdToggleBtn?.classList.contains("active");
+		const targetUrl = isCurrentlyHD ? (currentPost.sampleUrl || currentPost.fileUrl) : currentPost.fileUrl;
+		setHdActive(!isCurrentlyHD);
+
+		if (img.src !== targetUrl) {
+			const full = new Image();
+			full.src = targetUrl;
+			full.onload = () => {
+				if (getMediaElement() === img) {
+					img.src = targetUrl;
+				}
+			};
 		}
 	}
 
+	stage.addEventListener("pointerdown", onPointerDown);
+	stage.addEventListener("pointermove", onPointerMove);
+	stage.addEventListener("pointerup", onPointerUp);
+	stage.addEventListener("pointercancel", onPointerUp);
+	stage.addEventListener("click", onStageClick);
+	stage.addEventListener("wheel", onWheel, { passive: false });
 	zoomToggleBtn?.addEventListener("click", onZoomToggleClick);
 	hdToggleBtn?.addEventListener("click", onHdToggleClick);
 
 	return {
-		setMedia(postData, thumbSrc) {
-			loadMedia(postData, thumbSrc);
-		},
+		setMedia,
 		resetZoom,
-		toggleZoom,
-		destroy() {
-			resetZoom();
-			stage.removeEventListener("mousedown", onMouseDown);
-			window.removeEventListener("mousemove", onWindowMouseMove);
-			window.removeEventListener("mouseup", onWindowMouseUp);
-			stage.removeEventListener("mousemove", onMouseMove);
+		destroy: () => {
+			stage.removeEventListener("pointerdown", onPointerDown);
+			stage.removeEventListener("pointermove", onPointerMove);
+			stage.removeEventListener("pointerup", onPointerUp);
+			stage.removeEventListener("pointercancel", onPointerUp);
+			stage.removeEventListener("click", onStageClick);
 			stage.removeEventListener("wheel", onWheel);
-			stage.removeEventListener("click", onClick);
 			zoomToggleBtn?.removeEventListener("click", onZoomToggleClick);
 			hdToggleBtn?.removeEventListener("click", onHdToggleClick);
 		},
@@ -1154,296 +1112,17 @@ function createZoomableMediaViewer(options) {
 	};
 }
 
-// Lightbox implementation
-const cards = Array.from(document.querySelectorAll(".post-card"));
-const lightbox = document.getElementById("lightbox");
-
-if (lightbox && cards.length > 0) {
-	const lbPostLink = document.getElementById("lb-post-link");
-	const lbScore = document.getElementById("lb-score");
-	const lbRate = document.getElementById("lb-rate");
-	const lbHotVal = document.getElementById("lb-hot-val");
-	const lbAge = document.getElementById("lb-age");
-	const lbHdToggle = document.getElementById("lb-hd-toggle");
-	const lbHypnohubLink = document.getElementById("lb-hypnohub-link");
-	const lbClose = document.getElementById("lb-close");
-	const lbPrev = document.getElementById("lb-prev");
-	const lbNext = document.getElementById("lb-next");
-	const lbMediaWrap = document.getElementById("lb-media-wrap");
-	const lbTags = document.getElementById("lb-tags");
-	const lbStage = document.getElementById("lightbox-stage");
-	const lbZoomToggle = document.getElementById("lb-zoom-toggle");
-	const lbGroupBadge = document.getElementById("lb-group-badge");
-	const lbGroupBadgeVal = document.getElementById("lb-group-badge-val");
-	const lbGroupNav = document.getElementById("lb-group-nav");
-	const groupPostsCache = new Map();
-
-	let currentCardIndex = 0;
-	let currentGroupPosts = [];
-	let currentGroupIndex = 0;
-
-	function closeLightbox() {
-		document.body.classList.remove("lightbox-open");
-		lbViewer.resetZoom();
-		if (!lightbox.open) return;
-		lightbox.close();
-		if (window.history.state?.lightbox) {
-			window.history.back();
-		}
-	}
-
-	const lbViewer = createZoomableMediaViewer({
-		stage: lbStage,
-		mediaWrap: lbMediaWrap,
-		zoomToggleBtn: lbZoomToggle,
-		hdToggleBtn: lbHdToggle,
-		onOutsideClick: closeLightbox,
-		isMediaActive: () => lightbox.open
-	});
-
-	window.addEventListener("popstate", () => {
-		document.body.classList.remove("lightbox-open");
-		if (lightbox.open) {
-			lightbox.close();
-		}
-	});
-
-	function updateGroupNavArrows() {
-		if (!currentGroupPosts || currentGroupPosts.length <= 1) {
-			if (lbPrev) lbPrev.style.display = "none";
-			if (lbNext) lbNext.style.display = "none";
-			return;
-		}
-		if (lbPrev) lbPrev.style.display = currentGroupIndex > 0 ? "flex" : "none";
-		if (lbNext) lbNext.style.display = currentGroupIndex < currentGroupPosts.length - 1 ? "flex" : "none";
-	}
-
-	function goToGroupPage(idx) {
-		if (!currentGroupPosts || idx < 0 || idx >= currentGroupPosts.length) return;
-		currentGroupIndex = idx;
-		const gp = currentGroupPosts[idx];
-
-		if (lbGroupNav) {
-			lbGroupNav.querySelectorAll(".lb-page-pill").forEach((p, i) => {
-				p.classList.toggle("active", i === idx);
-			});
-		}
-
-		const isVid = ["mp4", "webm"].includes(gp.file_ext);
-		const posterUrl = isVid ? (gp.preview_url || gp.sample_url) : (gp.sample_url || gp.preview_url);
-
-		renderLightboxPostData({
-			id: gp.id,
-			score: gp.score,
-			hot: Math.round(gp.hot_score || 0),
-			created: "",
-			width: gp.width,
-			height: gp.height,
-			ext: gp.file_ext,
-			fileUrl: gp.file_url,
-			sampleUrl: gp.sample_url,
-			previewUrl: gp.preview_url,
-			tags: gp.tags
-		}, posterUrl);
-
-		updateGroupNavArrows();
-	}
-
-	function renderLightboxPostData(d, thumbSrc) {
-		lbPostLink.href = `/posts/${d.id}`;
-		lbPostLink.textContent = `#${d.id}`;
-		lbScore.textContent = `★ ${d.score}`;
-		if (lbRate) {
-			const isPopular = window.location.pathname.startsWith("/popular") || !!document.querySelector('.nav-btn.active[href*="popular"]');
-			const hot = parseInt(d.hot, 10) || 0;
-			if (isPopular && hot > 0) {
-				lbRate.style.display = "";
-				if (lbHotVal) {
-					lbHotVal.textContent = String(hot);
-				}
-			} else {
-				lbRate.style.display = "none";
-			}
-		}
-		const metaAge = d.created ? `${d.created} · ` : "";
-		lbAge.textContent = `${metaAge}${d.width}×${d.height} ${(d.ext || "").toUpperCase()}`;
-		lbHypnohubLink.href = `https://hypnohub.net/index.php?page=post&s=view&id=${d.id}`;
-
-		lbViewer.setMedia(d, thumbSrc);
-
-		// Render clickable tags
-		lbTags.innerHTML = "";
-		const tags = Array.isArray(d.tags) ? d.tags : (d.tags || "").split(/\s+/).filter(Boolean);
-		for (const tag of tags) {
-			const a = document.createElement("a");
-			a.href = `/?tags=${encodeURIComponent(tag)}`;
-			a.className = "tag-chip";
-			a.textContent = tag;
-			lbTags.appendChild(a);
-		}
-	}
-
-	function renderLightbox(cardIndex) {
-		if (cardIndex < 0 || cardIndex >= cards.length) return;
-		currentCardIndex = cardIndex;
-		const card = cards[cardIndex];
-		const d = card.dataset;
-		const thumbSrc = card.querySelector("img")?.currentSrc || d.sampleUrl || d.previewUrl;
-
-		currentGroupPosts = [];
-		currentGroupIndex = 0;
-		updateGroupNavArrows();
-
-		renderLightboxPostData(d, thumbSrc);
-
-		const groupCount = parseInt(d.groupCount, 10) || 1;
-		if (lbGroupBadge) {
-			if (groupCount > 1) {
-				lbGroupBadge.style.display = "inline-flex";
-				if (lbGroupBadgeVal) lbGroupBadgeVal.textContent = String(groupCount);
-			} else {
-				lbGroupBadge.style.display = "none";
-			}
-		}
-
-		if (lbGroupNav) {
-			if (groupCount <= 1) {
-				lbGroupNav.style.display = "none";
-				lbGroupNav.innerHTML = "";
-				currentGroupPosts = [];
-				currentGroupIndex = 0;
-				updateGroupNavArrows();
-			} else {
-				lbGroupNav.style.display = "flex";
-				const renderPills = (groupPosts, activeId) => {
-					currentGroupPosts = groupPosts;
-					const foundIdx = groupPosts.findIndex(gp => gp.id === activeId);
-					currentGroupIndex = foundIdx >= 0 ? foundIdx : 0;
-					updateGroupNavArrows();
-
-					lbGroupNav.innerHTML = "";
-					groupPosts.forEach((gp, gIdx) => {
-						const pill = document.createElement("button");
-						pill.type = "button";
-						pill.className = "lb-page-pill" + (gIdx === currentGroupIndex ? " active" : "");
-						pill.textContent = String(gIdx + 1);
-						pill.title = `Page ${gIdx + 1} (Post #${gp.id})`;
-						pill.addEventListener("click", (e) => {
-							e.stopPropagation();
-							goToGroupPage(gIdx);
-						});
-						lbGroupNav.appendChild(pill);
-					});
-				};
-
-				if (groupPostsCache.has(d.id)) {
-					renderPills(groupPostsCache.get(d.id), parseInt(d.id, 10));
-				} else {
-					fetch(`/api/v1/posts/${d.id}`)
-						.then(r => r.json())
-						.then(data => {
-							if (currentCardIndex !== cardIndex) return;
-							if (data?.group_posts && data.group_posts.length > 1) {
-								groupPostsCache.set(d.id, data.group_posts);
-								renderPills(data.group_posts, parseInt(d.id, 10));
-							}
-						})
-						.catch(() => {});
-				}
-			}
-		}
-	}
-
-	cards.forEach((card, idx) => {
-		const mediaLink = card.querySelector(".card-media-link");
-		mediaLink?.addEventListener("click", (e) => {
-			if (e.target.closest("video.inline-autoplay-video")) {
-				return;
-			}
-			if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-			if (!currentSettings.enableLightbox) return;
-			e.preventDefault();
-			renderLightbox(idx);
-			if (!lightbox.open) {
-				document.body.classList.add("lightbox-open");
-				window.history.pushState({ lightbox: true }, "");
-				lightbox.showModal();
-			}
-		});
-	});
-
-	lbClose?.addEventListener("click", closeLightbox);
-	lbPrev?.addEventListener("click", (e) => {
-		e.stopPropagation();
-		if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
-			goToGroupPage(currentGroupIndex - 1);
-		}
-	});
-	lbNext?.addEventListener("click", (e) => {
-		e.stopPropagation();
-		if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
-			goToGroupPage(currentGroupIndex + 1);
-		}
-	});
-
-	lightbox.addEventListener("close", () => {
-		document.body.classList.remove("lightbox-open");
-		lbMediaWrap.innerHTML = "";
-	});
-
-	// Touch swipe navigation for mobile (across pages of a group)
-	let touchStartX = 0;
-	let touchStartY = 0;
-
-	lbStage?.addEventListener("touchstart", (e) => {
-		if (e.touches.length === 1) {
-			touchStartX = e.touches[0].clientX;
-			touchStartY = e.touches[0].clientY;
-		}
-	}, { passive: true });
-
-	lbStage?.addEventListener("touchend", (e) => {
-		if (lbViewer.isZoomed()) return;
-		if (e.changedTouches.length !== 1) return;
-		const dx = e.changedTouches[0].clientX - touchStartX;
-		const dy = e.changedTouches[0].clientY - touchStartY;
-		if (Math.abs(dx) > 45 && Math.abs(dy) < 90) {
-			if (currentGroupPosts.length > 1) {
-				if (dx < 0 && currentGroupIndex < currentGroupPosts.length - 1) {
-					goToGroupPage(currentGroupIndex + 1);
-				} else if (dx > 0 && currentGroupIndex > 0) {
-					goToGroupPage(currentGroupIndex - 1);
-				}
-			}
-		}
-	}, { passive: true });
-
-	// Keyboard navigation: ArrowLeft/ArrowRight navigates group pages only
-	document.addEventListener("keydown", (e) => {
-		if (!lightbox.open) return;
-		if (e.key === "ArrowLeft") {
-			if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
-				e.preventDefault();
-				goToGroupPage(currentGroupIndex - 1);
-			}
-		} else if (e.key === "ArrowRight") {
-			if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
-				e.preventDefault();
-				goToGroupPage(currentGroupIndex + 1);
-			}
-		} else if (e.key === "Escape") {
-			e.preventDefault();
-			closeLightbox();
-		}
-	});
-}
-
-// Post Detail Page progressive preloading & unified zoom viewer
 let currentDetailViewer = null;
 
 function initPostDetail() {
 	const postStage = document.getElementById("post-stage");
-	if (!postStage) return;
+	if (!postStage) {
+		if (currentDetailViewer) {
+			currentDetailViewer.destroy();
+			currentDetailViewer = null;
+		}
+		return;
+	}
 
 	if (currentDetailViewer) {
 		currentDetailViewer.destroy();
@@ -1480,55 +1159,487 @@ function initPostDetail() {
 	});
 }
 
-initPostDetail();
+function initLightbox() {
+	const cards = Array.from(document.querySelectorAll(".post-card"));
+	const lightbox = document.getElementById("lightbox");
 
-document.body.addEventListener("htmx:afterSwap", (e) => {
-	if (e.detail?.target?.id === "post-detail") {
-		initPostDetail();
+	if (!lightbox || cards.length === 0) {
+		window.__hypnogazeLb = null;
+		return;
 	}
-});
 
-document.body.addEventListener("htmx:historyRestore", () => {
-	initPostDetail();
-});
+	const lbPostLink = document.getElementById("lb-post-link");
+	const lbScore = document.getElementById("lb-score");
+	const lbRate = document.getElementById("lb-rate");
+	const lbHotVal = document.getElementById("lb-hot-val");
+	const lbAge = document.getElementById("lb-age");
+	const lbHdToggle = document.getElementById("lb-hd-toggle");
+	const lbHypnohubLink = document.getElementById("lb-hypnohub-link");
+	const lbClose = document.getElementById("lb-close");
+	const lbPrev = document.getElementById("lb-prev");
+	const lbNext = document.getElementById("lb-next");
+	const lbMediaWrap = document.getElementById("lb-media-wrap");
+	const lbTags = document.getElementById("lb-tags");
+	const lbStage = document.getElementById("lightbox-stage");
+	const lbZoomToggle = document.getElementById("lb-zoom-toggle");
+	const lbGroupBadge = document.getElementById("lb-group-badge");
+	const lbGroupBadgeVal = document.getElementById("lb-group-badge-val");
+	const lbGroupNav = document.getElementById("lb-group-nav");
+	const groupPostsCache = new Map();
 
-// Arrow key navigation on post detail page
-window.addEventListener("keydown", (e) => {
-	if (document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA")) return;
-	const lb = document.getElementById("lightbox");
-	if (lb && lb.open) return; // handled by lightbox
+	let currentCardIndex = 0;
+	let currentGroupPosts = [];
+	let currentGroupIndex = 0;
 
-	if (e.key === "ArrowLeft") {
-		const prevBtn = document.getElementById("group-prev-btn");
-		if (prevBtn) {
-			e.preventDefault();
-			prevBtn.click();
-		}
-	} else if (e.key === "ArrowRight") {
-		const nextBtn = document.getElementById("group-next-btn");
-		if (nextBtn) {
-			e.preventDefault();
-			nextBtn.click();
+	function closeLightbox(fromHistory = false) {
+		document.body.classList.remove("lightbox-open");
+		lbViewer.resetZoom();
+		if (!lightbox.open) return;
+		lightbox.close();
+		if (!fromHistory && window.history.state?.lightbox) {
+			window.history.back();
 		}
 	}
-});
 
-// Reusable [data-tooltip] tap/click toggle for touch & mobile devices
-document.addEventListener("click", (e) => {
-	const trigger = e.target.closest("[data-tooltip]");
-	document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((openEl) => {
-		if (openEl !== trigger) openEl.classList.remove("is-tooltip-open");
+	const lbViewer = createZoomableMediaViewer({
+		stage: lbStage,
+		mediaWrap: lbMediaWrap,
+		zoomToggleBtn: lbZoomToggle,
+		hdToggleBtn: lbHdToggle,
+		onOutsideClick: () => closeLightbox(false),
+		isMediaActive: () => lightbox.open
 	});
-	if (trigger) {
-		e.stopPropagation();
-		trigger.classList.toggle("is-tooltip-open");
-	}
-});
 
-document.addEventListener("keydown", (e) => {
-	if (e.key === "Escape") {
-		document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((el) => {
-			el.classList.remove("is-tooltip-open");
+	function updateGroupNavArrows() {
+		if (!currentGroupPosts || currentGroupPosts.length <= 1) {
+			if (lbPrev) lbPrev.style.display = "none";
+			if (lbNext) lbNext.style.display = "none";
+			return;
+		}
+		if (lbPrev) lbPrev.style.display = currentGroupIndex > 0 ? "flex" : "none";
+		if (lbNext) lbNext.style.display = currentGroupIndex < currentGroupPosts.length - 1 ? "flex" : "none";
+	}
+
+	function renderGroupNavPills() {
+		if (!lbGroupNav) return;
+		if (!currentGroupPosts || currentGroupPosts.length <= 1) {
+			lbGroupNav.innerHTML = "";
+			lbGroupNav.style.display = "none";
+			return;
+		}
+		lbGroupNav.style.display = "flex";
+		lbGroupNav.innerHTML = "";
+		currentGroupPosts.forEach((p, idx) => {
+			const pill = document.createElement("button");
+			pill.type = "button";
+			pill.className = `lb-page-pill ${idx === currentGroupIndex ? "active" : ""}`;
+			pill.textContent = p.post_index ? `p.${p.post_index}` : `#${idx + 1}`;
+			pill.onclick = (e) => {
+				e.stopPropagation();
+				goToGroupPage(idx);
+			};
+			lbGroupNav.appendChild(pill);
 		});
 	}
-});
+
+	function goToGroupPage(idx) {
+		if (!currentGroupPosts || idx < 0 || idx >= currentGroupPosts.length) return;
+		currentGroupIndex = idx;
+		const post = currentGroupPosts[currentGroupIndex];
+
+		lbViewer.setMedia({
+			id: post.id,
+			ext: post.file_ext,
+			width: post.image_width,
+			height: post.image_height,
+			fileUrl: post.file_url,
+			sampleUrl: post.sample_url,
+			previewUrl: post.preview_url,
+			tags: post.tags
+		});
+
+		if (lbPostLink) {
+			lbPostLink.href = `/posts/${post.id}`;
+			lbPostLink.textContent = `#${post.id}`;
+		}
+		if (lbHypnohubLink) {
+			lbHypnohubLink.href = `https://hypnohub.net/post/show/${post.id}`;
+		}
+		if (lbScore) {
+			lbScore.textContent = post.score ?? "";
+		}
+
+		if (lbGroupBadgeVal) {
+			lbGroupBadgeVal.textContent = `p.${post.post_index || (currentGroupIndex + 1)}/${currentGroupPosts.length}`;
+		}
+
+		updateGroupNavArrows();
+		renderGroupNavPills();
+	}
+
+	function renderLightbox(idx) {
+		currentCardIndex = idx;
+		const card = cards[idx];
+		if (!card) return;
+
+		const d = card.dataset;
+		const thumbImg = card.querySelector(".card-thumb");
+		const thumbSrc = thumbImg?.currentSrc || thumbImg?.src || d.sampleUrl;
+
+		if (lbPostLink) {
+			lbPostLink.href = `/posts/${d.id}`;
+			lbPostLink.textContent = `#${d.id}`;
+		}
+		if (lbHypnohubLink) {
+			lbHypnohubLink.href = `https://hypnohub.net/post/show/${d.id}`;
+		}
+		if (lbScore) lbScore.textContent = d.score || "";
+		if (lbAge) lbAge.textContent = d.age || "";
+
+		if (lbRate) {
+			const rate = parseFloat(d.rate || "0");
+			const hot = parseFloat(d.hot || "0");
+			if (rate > 0) {
+				lbRate.style.display = "inline-flex";
+				if (lbHotVal) lbHotVal.textContent = `${rate.toFixed(1)}/d (${hot.toFixed(1)})`;
+			} else {
+				lbRate.style.display = "none";
+			}
+		}
+
+		if (lbTags) {
+			lbTags.innerHTML = "";
+			const tags = (d.tags || "").split(" ").filter(Boolean);
+			tags.forEach((t) => {
+				const a = document.createElement("a");
+				a.href = `/?q=${encodeURIComponent(t)}`;
+				a.className = "lb-tag";
+				a.textContent = t;
+				lbTags.appendChild(a);
+			});
+		}
+
+		currentGroupPosts = [];
+		currentGroupIndex = 0;
+		if (lbGroupBadge) lbGroupBadge.style.display = "none";
+		if (lbGroupNav) lbGroupNav.style.display = "none";
+		updateGroupNavArrows();
+
+		const initialPost = {
+			id: d.id,
+			ext: d.ext,
+			width: d.width,
+			height: d.height,
+			fileUrl: d.fileUrl,
+			sampleUrl: d.sampleUrl,
+			previewUrl: d.previewUrl,
+			tags: d.tags
+		};
+
+		lbViewer.setMedia(initialPost, thumbSrc);
+
+		const groupId = d.groupId;
+		if (groupId && groupId !== "0") {
+			if (lbGroupBadge) {
+				lbGroupBadge.style.display = "inline-flex";
+				if (lbGroupBadgeVal) {
+					lbGroupBadgeVal.textContent = d.postIndex ? `p.${d.postIndex}` : "group";
+				}
+			}
+
+			if (groupPostsCache.has(groupId)) {
+				currentGroupPosts = groupPostsCache.get(groupId);
+				const foundIdx = currentGroupPosts.findIndex((p) => String(p.id) === String(d.id));
+				currentGroupIndex = foundIdx >= 0 ? foundIdx : 0;
+				if (lbGroupBadgeVal) {
+					const curP = currentGroupPosts[currentGroupIndex];
+					lbGroupBadgeVal.textContent = `p.${curP?.post_index || (currentGroupIndex + 1)}/${currentGroupPosts.length}`;
+				}
+				updateGroupNavArrows();
+				renderGroupNavPills();
+			} else {
+				fetch(`/api/posts?group_id=${encodeURIComponent(groupId)}&limit=100`)
+					.then((res) => (res.ok ? res.json() : Promise.reject()))
+					.then((posts) => {
+						if (Array.isArray(posts) && posts.length > 0) {
+							posts.sort((a, b) => (a.post_index || 0) - (b.post_index || 0));
+							groupPostsCache.set(groupId, posts);
+							if (String(currentCardIndex) === String(idx) && lightbox.open) {
+								currentGroupPosts = posts;
+								const fIdx = posts.findIndex((p) => String(p.id) === String(d.id));
+								currentGroupIndex = fIdx >= 0 ? fIdx : 0;
+								if (lbGroupBadgeVal) {
+									const curP = currentGroupPosts[currentGroupIndex];
+									lbGroupBadgeVal.textContent = `p.${curP?.post_index || (currentGroupIndex + 1)}/${currentGroupPosts.length}`;
+								}
+								updateGroupNavArrows();
+								renderGroupNavPills();
+							}
+						}
+					})
+					.catch(() => {});
+			}
+		}
+	}
+
+	cards.forEach((card, idx) => {
+		const mediaLink = card.querySelector(".card-media-link");
+		if (mediaLink) {
+			mediaLink.onclick = (e) => {
+				if (e.target.closest("video.inline-autoplay-video")) return;
+				if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+				if (!currentSettings.enableLightbox) return;
+				e.preventDefault();
+				renderLightbox(idx);
+				if (!lightbox.open) {
+					document.body.classList.add("lightbox-open");
+					window.history.pushState({ lightbox: true }, "");
+					lightbox.showModal();
+				}
+			};
+		}
+	});
+
+	if (lbClose) lbClose.onclick = () => closeLightbox(false);
+
+	if (lbPrev) {
+		lbPrev.onclick = (e) => {
+			e.stopPropagation();
+			if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
+				goToGroupPage(currentGroupIndex - 1);
+			}
+		};
+	}
+
+	if (lbNext) {
+		lbNext.onclick = (e) => {
+			e.stopPropagation();
+			if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
+				goToGroupPage(currentGroupIndex + 1);
+			}
+		};
+	}
+
+	lightbox.onclose = () => {
+		document.body.classList.remove("lightbox-open");
+		lbMediaWrap.innerHTML = "";
+	};
+
+	let touchStartX = 0;
+	let touchStartY = 0;
+
+	lbStage?.addEventListener("touchstart", (e) => {
+		if (e.touches.length === 1) {
+			touchStartX = e.touches[0].clientX;
+			touchStartY = e.touches[0].clientY;
+		}
+	}, { passive: true });
+
+	lbStage?.addEventListener("touchend", (e) => {
+		if (lbViewer.isZoomed()) return;
+		if (e.changedTouches.length !== 1) return;
+		const dx = e.changedTouches[0].clientX - touchStartX;
+		const dy = e.changedTouches[0].clientY - touchStartY;
+		if (Math.abs(dx) > 45 && Math.abs(dy) < 90) {
+			if (currentGroupPosts.length > 1) {
+				if (dx < 0 && currentGroupIndex < currentGroupPosts.length - 1) {
+					goToGroupPage(currentGroupIndex + 1);
+				} else if (dx > 0 && currentGroupIndex > 0) {
+					goToGroupPage(currentGroupIndex - 1);
+				}
+			}
+		}
+	}, { passive: true });
+
+	window.__hypnogazeLb = {
+		close: closeLightbox,
+		prev: () => {
+			if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
+				goToGroupPage(currentGroupIndex - 1);
+			}
+		},
+		next: () => {
+			if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
+				goToGroupPage(currentGroupIndex + 1);
+			}
+		},
+		isOpen: () => lightbox && lightbox.open
+	};
+}
+
+function registerServiceWorker() {
+	if (!("serviceWorker" in navigator)) return;
+
+	navigator.serviceWorker.register("/sw.js", { scope: "/" })
+		.then((reg) => {
+			setInterval(() => {
+				reg.update().catch(() => {});
+			}, 60 * 60 * 1000);
+
+			document.addEventListener("visibilitychange", () => {
+				if (document.visibilityState === "visible") {
+					reg.update().catch(() => {});
+				}
+			});
+		})
+		.catch((err) => {
+			console.warn("ServiceWorker registration failed:", err);
+		});
+
+	let refreshing = false;
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		if (refreshing) return;
+		refreshing = true;
+	});
+}
+
+function attachGlobalListeners() {
+	if (window.__hypnogazeGlobalAttached) return;
+	window.__hypnogazeGlobalAttached = true;
+
+	registerServiceWorker();
+
+	window.addEventListener("resize", () => {
+		updateTopbarHeight();
+		if (window.matchMedia("(min-width: 960px)").matches) {
+			const mobileCheckbox = document.getElementById("mobile-filter-state");
+			const indexSidebar = document.getElementById("index-sidebar");
+			if (mobileCheckbox?.checked || indexSidebar?.classList.contains("is-open")) {
+				window.__hypnogazeSyncDrawer?.(false, true);
+			}
+		}
+	}, { passive: true });
+
+	window.addEventListener("scroll", () => {
+		const topbar = document.querySelector(".topbar");
+		const scrollY = Math.max(0, window.scrollY);
+		const topbarHeight = topbar?.offsetHeight || 55;
+
+		if (document.body.classList.contains("filter-open") || document.getElementById("mobile-filter-state")?.checked) {
+			document.body.classList.remove("topbar-hidden");
+			lastScrollY = scrollY;
+			return;
+		}
+
+		if (scrollY <= 0) {
+			document.body.classList.remove("topbar-hidden");
+			document.body.classList.remove("topbar-overlay");
+		} else if (scrollY > lastScrollY && scrollY > topbarHeight) {
+			document.body.classList.add("topbar-hidden");
+			document.body.classList.remove("topbar-overlay");
+		} else if (scrollY < lastScrollY - 2) {
+			document.body.classList.remove("topbar-hidden");
+			if (scrollY > 10) {
+				document.body.classList.add("topbar-overlay");
+			} else {
+				document.body.classList.remove("topbar-overlay");
+			}
+		}
+
+		lastScrollY = scrollY;
+	}, { passive: true });
+
+	window.addEventListener("popstate", () => {
+		if (window.__hypnogazeLb?.isOpen()) {
+			window.__hypnogazeLb.close(true);
+		}
+		const mobileCheckbox = document.getElementById("mobile-filter-state");
+		const indexSidebar = document.getElementById("index-sidebar");
+		if (mobileCheckbox?.checked || indexSidebar?.classList.contains("is-open")) {
+			window.__hypnogazeSyncDrawer?.(false, true);
+		}
+	});
+
+	window.addEventListener("keydown", (e) => {
+		if (document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA")) return;
+
+		if (window.__hypnogazeLb?.isOpen()) {
+			if (e.key === "ArrowLeft") {
+				e.preventDefault();
+				window.__hypnogazeLb.prev();
+			} else if (e.key === "ArrowRight") {
+				e.preventDefault();
+				window.__hypnogazeLb.next();
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				window.__hypnogazeLb.close();
+			}
+			return;
+		}
+
+		if (e.key === "Escape") {
+			const mobileCheckbox = document.getElementById("mobile-filter-state");
+			const indexSidebar = document.getElementById("index-sidebar");
+			if (mobileCheckbox?.checked || indexSidebar?.classList.contains("is-open")) {
+				e.preventDefault();
+				window.__hypnogazeSyncDrawer?.(false);
+			}
+			return;
+		}
+
+		if (e.key === "ArrowLeft") {
+			const prevBtn = document.getElementById("group-prev-btn");
+			if (prevBtn) {
+				e.preventDefault();
+				prevBtn.click();
+			}
+		} else if (e.key === "ArrowRight") {
+			const nextBtn = document.getElementById("group-next-btn");
+			if (nextBtn) {
+				e.preventDefault();
+				nextBtn.click();
+			}
+		}
+	});
+
+	document.addEventListener("click", (e) => {
+		document.querySelectorAll(".tag-suggestions").forEach((box) => {
+			const parent = box.parentElement;
+			if (parent && !parent.contains(e.target)) {
+				box.innerHTML = "";
+			}
+		});
+
+		const trigger = e.target.closest("[data-tooltip]");
+		document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((openEl) => {
+			if (openEl !== trigger) openEl.classList.remove("is-tooltip-open");
+		});
+		if (trigger) {
+			e.stopPropagation();
+			trigger.classList.toggle("is-tooltip-open");
+		}
+	});
+
+	document.addEventListener("keydown", (e) => {
+		if (e.key === "Escape") {
+			document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((el) => {
+				el.classList.remove("is-tooltip-open");
+			});
+		}
+	});
+
+	document.addEventListener("htmx:afterSwap", (e) => {
+		if (e.detail?.target?.id === "post-detail") {
+			initPostDetail();
+		}
+	});
+
+	document.addEventListener("htmx:historyRestore", () => {
+		initPostDetail();
+	});
+}
+
+function hypnogazeInit() {
+	updateTopbarHeight();
+	applyVisualSettings(currentSettings);
+	initSettingsUI();
+	initSearchUI();
+	initLightbox();
+	initPostDetail();
+	updateSingleColumnAutoplay();
+}
+
+window.hypnogazeInit = hypnogazeInit;
+
+attachGlobalListeners();
+hypnogazeInit();
