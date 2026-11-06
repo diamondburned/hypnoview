@@ -92,7 +92,7 @@ type ListPostsOutput struct {
 
 // GetPostInput defines the path parameter for fetching a single post.
 type GetPostInput struct {
-	ID int `path:"id" minimum:"1" doc:"Hypnohub post ID."`
+	ID hypnohub.PostID `path:"id" minimum:"1" doc:"Hypnohub post ID."`
 }
 
 // PostDetailResponse contains a single indexed post and its historical score snapshots.
@@ -211,7 +211,7 @@ func (s *Server) listPosts(ctx context.Context, input *ListPostsInput) (*ListPos
 }
 
 func (s *Server) getPost(ctx context.Context, input *GetPostInput) (*GetPostOutput, error) {
-	post, snapshots, err := s.store.GetPost(ctx, hypnohub.PostID(input.ID))
+	post, snapshots, err := s.store.GetPost(ctx, input.ID)
 	if err != nil {
 		if errors.Is(err, index.ErrNotFound) {
 			return nil, huma.Error404NotFound("post not found in index")

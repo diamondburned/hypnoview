@@ -945,6 +945,7 @@ function createZoomableMediaViewer(options) {
 			const sw = stage.clientWidth;
 			const ar = postW / postH;
 			const maxWidthCap = Math.min(sw, 1000);
+			if (!isZoomed && r.width >= maxWidthCap) return;
 
 			const baseW = isZoomed && targetW > 0 ? (targetW / currentZoomScale) : r.width;
 			let newScale = (isZoomed ? currentZoomScale : 1) + delta;
@@ -954,10 +955,8 @@ function createZoomableMediaViewer(options) {
 			}
 			if (newScale > 5) newScale = 5;
 
-			let computedW = Math.round(baseW * newScale);
-			if (computedW > maxWidthCap) {
-				computedW = maxWidthCap;
-			}
+			const computedW = Math.min(Math.round(baseW * newScale), maxWidthCap);
+			newScale = baseW > 0 ? computedW / baseW : newScale;
 			const computedH = Math.round(computedW / ar);
 
 			targetW = computedW;

@@ -931,6 +931,150 @@ func TestPostGroupStatusTransitions(t *testing.T) {
 	}
 }
 
+func TestGetPostMatchesPopularWhenPollIsStale(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	// The latest poll was 48 hours ago
+	latestPoll := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+	midPoll := latestPoll.Add(-12 * time.Hour)
+
+	// Post 1: created 36h before latest poll (before 24h window), but has a snapshot at midPoll (-12h, inside window)
+	// with score 10, then at latestPoll with score 35.
+	p1 := hypnohub.Post{
+		ID:        1,
+		Score:     10,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "test",
+		FileURL:   "https://hypnohub.net/1.jpg",
+		SampleURL: "https://hypnohub.net/1.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(latestPoll.Add(-36 * time.Hour)),
+		Status:    "active",
+	}
+
+	// Post 2: created 10h before latest poll (within 24h window), but only first polled at latestPoll (no snapshots inside window).
+	p2 := hypnohub.Post{
+		ID:        2,
+		Score:     25,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "test",
+		FileURL:   "https://hypnohub.net/2.jpg",
+		SampleURL: "https://hypnohub.net/2.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(latestPoll.Add(-10 * time.Hour)),
+		Status:    "active",
+	}
+
+	// Post 3: older post created 100h before latest poll, polled at -80h, but no snapshots in [latestPoll-24h, latestPoll).
+	p3 := hypnohub.Post{
+		ID:        3,
+		Score:     50,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "test",
+		FileURL:   "https://hypnohub.net/3.jpg",
+		SampleURL: "https://hypnohub.net/3.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(latestPoll.Add(-100 * time.Hour)),
+		Status:    "active",
+	}
+
+	// Ingest p3 at -80h
+	oldPoll := latestPoll.Add(-80 * time.Hour)
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p3}, oldPoll, oldPoll, oldPoll, 1, false); err != nil {
+		t.Fatalf("ingest oldPoll: %v", err)
+	}
+
+	// Ingest p1 at midPoll (-12h)
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p1}, midPoll, midPoll, midPoll, 1, false); err != nil {
+		t.Fatalf("ingest midPoll: %v", err)
+	}
+
+	// Ingest p1, p2, p3 at latestPoll (-48h ago from wall clock)
+	p1.Score = 35
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p1, p2, p3}, latestPoll, latestPoll, latestPoll, 1, false); err != nil {
+		t.Fatalf("ingest latestPoll: %v", err)
+	}
+
+	res, err := store.QueryPosts(ctx, QueryOptions{
+		Window: WindowDay,
+		Sort:   SortHot,
+	})
+	if err != nil {
+		t.Fatalf("QueryPosts: %v", err)
+	}
+
+	resMap := make(map[hypnohub.PostID]IndexedPost, len(res.Posts))
+	for _, p := range res.Posts {
+		resMap[p.ID] = p
+	}
+
+	tests := []struct {
+		name          string
+		postID        hypnohub.PostID
+		wantInPopular bool
+		wantDelta     int
+	}{
+		{
+			name:          "post_with_snapshots_in_24h_window",
+			postID:        1,
+			wantInPopular: true,
+			wantDelta:     25, // 35 - 10
+		},
+		{
+			name:          "post_created_in_window_without_prior_snapshots",
+			postID:        2,
+			wantInPopular: true,
+			wantDelta:     25, // full score
+		},
+		{
+			name:          "older_post_without_snapshots_in_window",
+			postID:        3,
+			wantInPopular: false,
+			wantDelta:     0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, err := store.GetPost(ctx, tt.postID)
+			if err != nil {
+				t.Fatalf("GetPost failed: %v", err)
+			}
+			if got.ScoreDelta != tt.wantDelta {
+				t.Errorf("GetPost ScoreDelta = %d, want %d", got.ScoreDelta, tt.wantDelta)
+			}
+
+			if tt.wantInPopular {
+				popPost, ok := resMap[tt.postID]
+				if !ok {
+					t.Fatalf("expected post %d in popular results", tt.postID)
+				}
+				if got.HotScore != popPost.HotScore {
+					t.Errorf("HotScore mismatch for post %d: GetPost=%v, Popular=%v", tt.postID, got.HotScore, popPost.HotScore)
+				}
+				if got.ScoreDelta != popPost.ScoreDelta {
+					t.Errorf("ScoreDelta mismatch for post %d: GetPost=%v, Popular=%v", tt.postID, got.ScoreDelta, popPost.ScoreDelta)
+				}
+			} else {
+				if got.HotScore != 0 {
+					t.Errorf("expected HotScore 0 for inactive post, got %v", got.HotScore)
+				}
+				if _, ok := resMap[tt.postID]; ok {
+					t.Errorf("inactive post %d should not appear in popular results", tt.postID)
+				}
+			}
+		})
+	}
+}
+
 func TestPostGroupingLinearAndCircular(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")

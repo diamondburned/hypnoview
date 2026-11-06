@@ -561,20 +561,27 @@ func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(robotsTxt))
 }
 
+type feedMode string
+
+const (
+	feedModeBrowse  feedMode = "browse"
+	feedModePopular feedMode = "popular"
+)
+
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	s.handleFeed(w, r, "browse")
+	s.handleFeed(w, r, feedModeBrowse)
 }
 
 func (s *Server) handlePopular(w http.ResponseWriter, r *http.Request) {
-	s.handleFeed(w, r, "popular")
+	s.handleFeed(w, r, feedModePopular)
 }
 
-func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string) {
+func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode feedMode) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
 	basePath := "/"
-	if mode == "popular" {
+	if mode == feedModePopular {
 		basePath = "/popular"
 	}
 
@@ -584,7 +591,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 	var defaultSort index.SortMode
 	var pageTitle string
 
-	if mode == "popular" {
+	if mode == feedModePopular {
 		defaultWindow = index.WindowDay
 		if prefs.WindowPopular != "" {
 			wNorm := string(index.Window(prefs.WindowPopular).Normalize())
@@ -684,7 +691,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 		Sort:           sortMode,
 		Rating:         hypnohub.Rating(rating),
 		MediaType:      index.NormalizeMediaType(media),
-		CollapseGroups: mode == "browse",
+		CollapseGroups: mode == feedModeBrowse,
 		IncludeTags:    inc,
 		ExcludeTags:    exc,
 		Limit:          limit,
@@ -813,7 +820,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 
 	data := indexPageData{
 		Title:                   pageTitle,
-		ActiveNav:               mode,
+		ActiveNav:               string(mode),
 		FormAction:              basePath,
 		Window:                  window,
 		Sort:                    string(sortMode),

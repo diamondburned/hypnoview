@@ -25,9 +25,7 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-var (
-	errIntegrityCheckFailed = errors.New("sqlite integrity check failed")
-)
+var errIntegrityCheckFailed = errors.New("sqlite integrity check failed")
 
 // isCorruptError returns true only when the error represents a genuine unrecoverable
 // corruption of the SQLite database disk image, not transient lock or context errors.
@@ -290,7 +288,7 @@ type IndexedPost struct {
 	ParentID    hypnohub.PostID `json:"parent_id"`
 	MD5         string          `json:"md5"`
 	Source      string          `json:"source"`
-	Status      string          `json:"status"`
+	Status      PostStatus      `json:"status"`
 	HasNotes    bool            `json:"has_notes"`
 	HasComments bool            `json:"has_comments"`
 	HasChildren bool            `json:"has_children"`
@@ -783,9 +781,7 @@ func NormalizeMediaType(m string) MediaType {
 // PostStatus represents the moderation/lifecycle status of a post.
 type PostStatus string
 
-const (
-	StatusActive PostStatus = "active"
-)
+const StatusActive PostStatus = "active"
 
 // QueryOptions configures a query against the local post index.
 type QueryOptions struct {
@@ -1079,7 +1075,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 
 // GetPost retrieves a single indexed post by ID along with its score history snapshots.
 func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, []ScorePoint, error) {
-	now := time.Now().UTC()
+	now := s.latestReferenceTime(ctx).UTC()
 	tau := WindowDay.DampingHours()
 
 	postRow, err := s.q.GetPostByID(ctx, int64(id))
@@ -1159,7 +1155,7 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 	if groupID <= 0 {
 		return nil, nil
 	}
-	now := time.Now().UTC()
+	now := s.latestReferenceTime(ctx).UTC()
 	tau := WindowDay.DampingHours()
 
 	posts, err := s.q.ListGroupPosts(ctx, int64(groupID))
@@ -1308,7 +1304,7 @@ func postToIndexed(p sqlcgen.Post, now time.Time, tau float64) IndexedPost {
 		ParentID:       hypnohub.PostID(p.ParentID),
 		MD5:            p.MD5,
 		Source:         p.Source,
-		Status:         p.Status,
+		Status:         PostStatus(p.Status),
 		HasNotes:       p.HasNotes != 0,
 		HasComments:    p.HasComments != 0,
 		HasChildren:    p.HasChildren != 0,
@@ -1336,21 +1332,22 @@ func postToIndexed(p sqlcgen.Post, now time.Time, tau float64) IndexedPost {
 	}
 }
 
-func scanIndexedPost(scanner *sql.Rows) (IndexedPost, error) {
+func scanIndexedPost(rows *sql.Rows) (IndexedPost, error) {
 	var (
 		p                                       IndexedPost
 		id, parentID                            int
 		createdAt, changedAt, firstSeen, polled int64
 		rating                                  string
+		status                                  string
 		hasNotes, hasComments, hasChildren      int
 		tagsRaw                                 string
 		groupID, groupIsLatest, groupPageCount  int64
 		windowHours, scoreRate, hotScore        float64
 	)
 
-	err := scanner.Scan(
+	err := rows.Scan(
 		&id, &createdAt, &changedAt, &p.Score, &rating, &p.CreatorID, &parentID,
-		&p.MD5, &p.Source, &p.Status, &hasNotes, &hasComments, &hasChildren,
+		&p.MD5, &p.Source, &status, &hasNotes, &hasComments, &hasChildren,
 		&p.FileURL, &p.FileExt, &p.Width, &p.Height,
 		&p.SampleURL, &p.SampleWidth, &p.SampleHeight,
 		&p.PreviewURL, &p.PreviewWidth, &p.PreviewHeight,
@@ -1364,6 +1361,7 @@ func scanIndexedPost(scanner *sql.Rows) (IndexedPost, error) {
 
 	p.ID = hypnohub.PostID(id)
 	p.ParentID = hypnohub.PostID(parentID)
+	p.Status = PostStatus(status)
 	p.GroupID = hypnohub.PostID(groupID)
 	p.GroupIsLatest = groupIsLatest != 0
 	p.GroupPageCount = int(groupPageCount)
