@@ -230,5 +230,7 @@ SET
     group_is_latest  = (SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id)
 WHERE id IN (SELECT post_id FROM resolved);
 
+--------------------------------- NEW VERSION ---------------------------------
 
+ALTER TABLE tags ADD COLUMN category INTEGER NOT NULL DEFAULT -1;
 

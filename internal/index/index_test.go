@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1876,12 +1878,12 @@ func TestMigrationV5ToV6HealsStaleGroups(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Verify user_version is 6
+	// Verify user_version is at least 6 (latest schema is 7)
 	if err := store.DB().QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
 		t.Fatalf("querying user_version after migration: %v", err)
 	}
-	if userVersion != 6 {
-		t.Errorf("expected user_version 6, got %d", userVersion)
+	if userVersion < 6 {
+		t.Errorf("expected user_version >= 6, got %d", userVersion)
 	}
 
 	// Verify pools and pool_posts are dropped
@@ -2006,5 +2008,165 @@ func TestPostGroupLateArrivingParent(t *testing.T) {
 	}
 	if groupPosts[0].ID != 1001 || groupPosts[1].ID != 1002 {
 		t.Errorf("unexpected group posts: [%d, %d]", groupPosts[0].ID, groupPosts[1].ID)
+	}
+}
+
+func TestBuildTagGroupsOrdering(t *testing.T) {
+	input := []PostTag{
+		{Name: "text", Category: hypnohub.TagTypeMeta, Count: 500},
+		{Name: "hypnosis", Category: hypnohub.TagTypeGeneral, Count: 1000},
+		{Name: "armpits", Category: hypnohub.TagCategoryUnknown, Count: 200},
+		{Name: "thedrawing", Category: hypnohub.TagTypeArtist, Count: 43},
+		{Name: "emma_frost", Category: hypnohub.TagTypeCharacter, Count: 353},
+		{Name: "psylocke", Category: hypnohub.TagTypeCharacter, Count: 120},
+		{Name: "marvel_rivals", Category: hypnohub.TagTypeCopyright, Count: 553},
+		{Name: "marvel_comics", Category: hypnohub.TagTypeCopyright, Count: 3284},
+		{Name: "marvel_comics", Category: hypnohub.TagTypeCopyright, Count: 3284}, // duplicate
+		{Name: "comic", Category: hypnohub.TagTypeMeta, Count: 400},
+	}
+
+	groups := BuildTagGroups(input)
+	if len(groups) != 5 {
+		t.Fatalf("expected 5 groups, got %d: %+v", len(groups), groups)
+	}
+
+	wantOrder := []struct {
+		cat   hypnohub.TagType
+		label string
+		slug  string
+		tags  []string
+	}{
+		{hypnohub.TagTypeCopyright, "Copyright", "copyright", []string{"marvel_comics", "marvel_rivals"}},
+		{hypnohub.TagTypeCharacter, "Character", "character", []string{"emma_frost", "psylocke"}},
+		{hypnohub.TagTypeArtist, "Artist", "artist", []string{"thedrawing"}},
+		{hypnohub.TagTypeGeneral, "General", "general", []string{"armpits", "hypnosis"}},
+		{hypnohub.TagTypeMeta, "Meta", "meta", []string{"comic", "text"}},
+	}
+
+	for i, w := range wantOrder {
+		g := groups[i]
+		if g.Category != w.cat || g.Label != w.label || g.Slug != w.slug {
+			t.Errorf("group[%d] = (%v, %q, %q), want (%v, %q, %q)", i, g.Category, g.Label, g.Slug, w.cat, w.label, w.slug)
+		}
+		if len(g.Tags) != len(w.tags) {
+			t.Fatalf("group[%d] (%s) tags len = %d, want %d (%v)", i, g.Label, len(g.Tags), len(w.tags), g.Tags)
+		}
+		for j, wantTag := range w.tags {
+			if g.Tags[j].Name != wantTag {
+				t.Errorf("group[%d].Tags[%d] = %q, want %q", i, j, g.Tags[j].Name, wantTag)
+			}
+		}
+	}
+}
+
+func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "v6_to_v7.db")
+
+	versions := strings.Split(schemaSQL, "-- NEW VERSION --")
+	if len(versions) < 7 {
+		t.Fatalf("expected at least 7 versions in schemaSQL, got %d", len(versions))
+	}
+	v6Schema := strings.Join(versions[:6], "-- NEW VERSION --")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening raw db: %v", err)
+	}
+	if err := lazymigrate.Migrate(ctx, db, v6Schema); err != nil {
+		db.Close()
+		t.Fatalf("migrating to v6: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO tags (id, name, post_count) VALUES (1, 'bleach', 10), (2, 'orihime_inoue', 5);`)
+	if err != nil {
+		db.Close()
+		t.Fatalf("inserting v6 tags: %v", err)
+	}
+	db.Close()
+
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open migrating v6->v7 failed: %v", err)
+	}
+	defer store.Close()
+
+	var userVersion int
+	if err := store.DB().QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		t.Fatalf("querying user_version: %v", err)
+	}
+	if userVersion != 7 {
+		t.Errorf("expected user_version 7, got %d", userVersion)
+	}
+
+	var cat int
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'bleach'").Scan(&cat); err != nil {
+		t.Fatalf("selecting bleach category: %v", err)
+	}
+	if cat != -1 {
+		t.Errorf("expected default category -1 after v6->v7 migration, got %d", cat)
+	}
+
+	// Set up mock upstream server for on-demand resolution
+	postViewHits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287547" {
+			postViewHits++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<ul id="tag-sidebar">
+				<li class="tag-type-copyright tag"><a href="?">?</a><a href="#">bleach</a></li>
+				<li class="tag-type-character tag"><a href="?">?</a><a href="#">orihime inoue</a></li>
+				<li class="tag-type-artist tag"><a href="?">?</a><a href="#">kubotite</a></li>
+				<li class="tag-type-general tag"><a href="?">?</a><a href="#">hypnosis</a></li>
+				<li class="tag-type-metadata tag"><a href="?">?</a><a href="#">comic</a></li>
+			</ul>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:        287547,
+			Score:     42,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "comic hypnosis kubotite orihime_inoue bleach uncategorized_extra",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour)),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	// First GetPost resolves categories via PostViewTags (1 request) and persists them
+	p, _, err := store.GetPost(ctx, 287547)
+	if err != nil {
+		t.Fatalf("GetPost(287547) failed: %v", err)
+	}
+	if postViewHits != 1 {
+		t.Errorf("expected 1 PostViewTags request, got %d", postViewHits)
+	}
+	if len(p.TagGroups) != 5 {
+		t.Fatalf("expected 5 TagGroups, got %d: %+v", len(p.TagGroups), p.TagGroups)
+	}
+	if p.TagGroups[0].Slug != "copyright" || p.TagGroups[1].Slug != "character" || p.TagGroups[2].Slug != "artist" || p.TagGroups[3].Slug != "general" || p.TagGroups[4].Slug != "meta" {
+		t.Errorf("unexpected TagGroups order: %+v", p.TagGroups)
+	}
+
+	// Second GetPost should NOT hit upstream again because all tags on the post are now >= 0
+	_, _, err = store.GetPost(ctx, 287547)
+	if err != nil {
+		t.Fatalf("second GetPost(287547) failed: %v", err)
+	}
+	if postViewHits != 1 {
+		t.Errorf("expected second GetPost to use cached SQLite categories without HTTP call, got hits=%d", postViewHits)
 	}
 }

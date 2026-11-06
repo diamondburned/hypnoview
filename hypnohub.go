@@ -5,9 +5,11 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -170,16 +172,87 @@ type Tag struct {
 type TagType int
 
 const (
-	TagTypeGeneral   TagType = 0
-	TagTypeArtist    TagType = 1
-	TagTypeCopyright TagType = 3
-	TagTypeCharacter TagType = 4
-	TagTypeMeta      TagType = 5
+	TagCategoryUnknown TagType = -1
+	TagTypeGeneral     TagType = 0
+	TagTypeArtist      TagType = 1
+	TagTypeCopyright   TagType = 3
+	TagTypeCharacter   TagType = 4
+	TagTypeMeta        TagType = 5
 )
+
+// Normalize returns a canonical TagType (Copyright, Character, Artist, Meta, or General).
+// Unknown (< 0) or unrecognized values normalize to TagTypeGeneral.
+func (t TagType) Normalize() TagType {
+	switch t {
+	case TagTypeCopyright, TagTypeCharacter, TagTypeArtist, TagTypeMeta:
+		return t
+	default:
+		return TagTypeGeneral
+	}
+}
+
+// Label returns the human-readable category title in upstream Hypnohub naming.
+func (t TagType) Label() string {
+	switch t.Normalize() {
+	case TagTypeCopyright:
+		return "Copyright"
+	case TagTypeCharacter:
+		return "Character"
+	case TagTypeArtist:
+		return "Artist"
+	case TagTypeMeta:
+		return "Meta"
+	default:
+		return "General"
+	}
+}
+
+// Slug returns the lowercase CSS/JSON slug for the tag category.
+func (t TagType) Slug() string {
+	switch t.Normalize() {
+	case TagTypeCopyright:
+		return "copyright"
+	case TagTypeCharacter:
+		return "character"
+	case TagTypeArtist:
+		return "artist"
+	case TagTypeMeta:
+		return "meta"
+	default:
+		return "general"
+	}
+}
+
+// SortOrder returns the upstream Hypnohub sidebar display order:
+// Copyright (0) -> Character (1) -> Artist (2) -> General (3) -> Meta (4).
+func (t TagType) SortOrder() int {
+	switch t.Normalize() {
+	case TagTypeCopyright:
+		return 0
+	case TagTypeCharacter:
+		return 1
+	case TagTypeArtist:
+		return 2
+	case TagTypeGeneral:
+		return 3
+	case TagTypeMeta:
+		return 4
+	default:
+		return 3
+	}
+}
 
 // Client is a Hypnohub client.
 type Client struct {
 	HTTPClient *http.Client
+	BaseURL    string
+}
+
+func (c *Client) baseURL() string {
+	if c != nil && c.BaseURL != "" {
+		return strings.TrimRight(c.BaseURL, "/")
+	}
+	return "https://hypnohub.net"
 }
 
 // New creates a new default Hypnohub client.
@@ -233,7 +306,7 @@ func (c *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOpt
 	if opts.Limit > 0 {
 		q.Set("limit", strconv.Itoa(opts.Limit))
 	}
-	endpoint := "https://hypnohub.net/index.php?" + q.Encode()
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
 
 	type Response struct {
 		XMLName xml.Name `xml:"posts"`
@@ -271,7 +344,7 @@ func (c *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	if afterID != 0 {
 		q["after_id"] = []string{strconv.Itoa(afterID)}
 	}
-	endpoint := "https://hypnohub.net/index.php?" + q.Encode()
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
 
 	type tagResponse struct {
 		XMLName xml.Name `xml:"tags"`
@@ -286,6 +359,126 @@ func (c *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	slices.Reverse(resp.Tags)
 
 	return &SearchTagsResult{resp.Tags}, nil
+}
+
+// TagByName fetches a single tag by exact name from the Hypnohub DAPI tag index.
+// Returns (nil, nil) if no matching tag exists upstream.
+func (c *Client) TagByName(ctx context.Context, name string) (*Tag, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return nil, nil
+	}
+	q := url.Values{
+		"page": {"dapi"},
+		"s":    {"tag"},
+		"q":    {"index"},
+		"name": {name},
+	}
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
+
+	type tagResponse struct {
+		XMLName xml.Name `xml:"tags"`
+		Tags    []Tag    `xml:"tag"`
+	}
+	resp, err := getXML[tagResponse](ctx, c.HTTPClient, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	for i := range resp.Tags {
+		if strings.EqualFold(resp.Tags[i].Name, name) {
+			return &resp.Tags[i], nil
+		}
+	}
+	return nil, nil
+}
+
+var (
+	tagSidebarULRe = regexp.MustCompile(`(?is)<ul[^>]*\bid=["']tag-sidebar["'][^>]*>(.*?)</ul>`)
+	tagSidebarLIRe = regexp.MustCompile(`(?is)<li[^>]*\bclass=["'][^"']*\btag-type-(copyright|character|artist|general|metadata|meta)\b[^"']*["'][^>]*>(.*?)</li>`)
+	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b[^>]*>(.*?)</a>`)
+)
+
+// PostViewTags fetches a post's HTML view page and scrapes tag categories from <ul id="tag-sidebar">.
+func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]TagType, error) {
+	q := url.Values{
+		"page": {"post"},
+		"s":    {"view"},
+		"id":   {strconv.Itoa(int(postID))},
+	}
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get %s: %s", endpoint, resp.Status)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading post view HTML: %w", err)
+	}
+
+	return ParsePostViewTags(string(bodyBytes)), nil
+}
+
+// ParsePostViewTags extracts a map of canonical tag name -> TagType from a Gelbooru <ul id="tag-sidebar"> HTML snippet or page.
+func ParsePostViewTags(htmlBody string) map[string]TagType {
+	scope := htmlBody
+	if m := tagSidebarULRe.FindStringSubmatch(htmlBody); len(m) > 1 {
+		scope = m[1]
+	}
+
+	liMatches := tagSidebarLIRe.FindAllStringSubmatch(scope, -1)
+	if len(liMatches) == 0 {
+		return nil
+	}
+
+	out := make(map[string]TagType, len(liMatches))
+	for _, m := range liMatches {
+		typeSlug := strings.ToLower(m[1])
+		liInner := m[2]
+
+		var tagType TagType
+		switch typeSlug {
+		case "copyright":
+			tagType = TagTypeCopyright
+		case "character":
+			tagType = TagTypeCharacter
+		case "artist":
+			tagType = TagTypeArtist
+		case "metadata", "meta":
+			tagType = TagTypeMeta
+		default:
+			tagType = TagTypeGeneral
+		}
+
+		aMatches := tagSidebarARe.FindAllStringSubmatch(liInner, -1)
+		var tagName string
+		for _, am := range aMatches {
+			rawText := strings.TrimSpace(html.UnescapeString(am[1]))
+			if rawText == "" || rawText == "?" || rawText == "+" || rawText == "-" {
+				continue
+			}
+			tagName = strings.ReplaceAll(strings.ToLower(rawText), " ", "_")
+		}
+		if tagName != "" {
+			out[tagName] = tagType
+		}
+	}
+	return out
 }
 
 type xmlResponse struct {

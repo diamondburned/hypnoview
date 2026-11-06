@@ -777,3 +777,89 @@ func TestBackURLAndRobotsMeta(t *testing.T) {
 		t.Errorf("expected hidden input rating=all in search form, got: %s", body)
 	}
 }
+
+func TestCategorizedPostTagsOnWebAndAPI(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287547" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<ul id="tag-sidebar">
+				<li class="tag-type-copyright tag"><a href="?">?</a><a href="#">marvel comics</a></li>
+				<li class="tag-type-character tag"><a href="?">?</a><a href="#">emma frost</a></li>
+				<li class="tag-type-artist tag"><a href="?">?</a><a href="#">thedrawing</a></li>
+				<li class="tag-type-general tag"><a href="?">?</a><a href="#">glowing eyes</a></li>
+				<li class="tag-type-metadata tag"><a href="?">?</a><a href="#">simple background</a></li>
+			</ul>`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:        287547,
+			Score:     55,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "simple_background glowing_eyes thedrawing emma_frost marvel_comics",
+			Width:     1200,
+			Height:    1600,
+			FileURL:   "https://example.com/287547.jpg",
+			SampleURL: "https://example.com/287547_sample.jpg",
+			CreatedAt: hypnohub.Date(now),
+			Status:    "active",
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	srv := NewServer(store, false)
+
+	// 1. Check Web /posts/287547 renders all 5 category groups in upstream order
+	req := httptest.NewRequest(http.MethodGet, "/posts/287547", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /posts/287547 status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	idxCopyright := strings.Index(body, "tag-category-copyright")
+	idxCharacter := strings.Index(body, "tag-category-character")
+	idxArtist := strings.Index(body, "tag-category-artist")
+	idxGeneral := strings.Index(body, "tag-category-general")
+	idxMeta := strings.Index(body, "tag-category-meta")
+
+	if idxCopyright == -1 || idxCharacter == -1 || idxArtist == -1 || idxGeneral == -1 || idxMeta == -1 {
+		t.Fatalf("missing expected tag category classes in post HTML: copyright=%d character=%d artist=%d general=%d meta=%d",
+			idxCopyright, idxCharacter, idxArtist, idxGeneral, idxMeta)
+	}
+	if !(idxCopyright < idxCharacter && idxCharacter < idxArtist && idxArtist < idxGeneral && idxGeneral < idxMeta) {
+		t.Errorf("tag categories not rendered in upstream order (Copyright -> Character -> Artist -> General -> Meta): %d, %d, %d, %d, %d",
+			idxCopyright, idxCharacter, idxArtist, idxGeneral, idxMeta)
+	}
+
+	// 2. Check REST API /api/v1/posts/287547 includes tag_groups
+	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/posts/287547", nil)
+	apiRec := httptest.NewRecorder()
+	srv.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/posts/287547 status = %d", apiRec.Code)
+	}
+	if !strings.Contains(apiRec.Body.String(), `"tag_groups"`) || !strings.Contains(apiRec.Body.String(), `"slug":"copyright"`) {
+		t.Errorf("API response missing tag_groups / copyright slug: %s", apiRec.Body.String())
+	}
+}

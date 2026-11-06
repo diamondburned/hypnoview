@@ -94,7 +94,7 @@ WHERE post_id = ?
 ORDER BY poll_time ASC;
 
 -- name: ListPopularTags :many
-SELECT name, post_count
+SELECT name, post_count, category
 FROM tags
 WHERE post_count > 0
 ORDER BY post_count DESC, name ASC
@@ -104,6 +104,7 @@ LIMIT ?;
 SELECT
     name,
     post_count,
+    category,
     like(sqlc.arg(prefix), name, '\') AS is_prefix
 FROM tags
 WHERE post_count > 0 AND like(sqlc.arg(pattern), name, '\')
@@ -155,3 +156,26 @@ ORDER BY id ASC;
 UPDATE posts
 SET group_id = ?, group_page_count = ?, group_is_latest = ?
 WHERE id = ?;
+
+-- name: GetPostTagsWithCategory :many
+SELECT
+    t.name,
+    t.category,
+    t.post_count
+FROM post_tags pt
+JOIN tags t ON t.id = pt.tag_id
+WHERE pt.post_id = ?
+ORDER BY t.name ASC;
+
+-- name: UpdateTagCategoryByName :exec
+UPDATE tags
+SET category = ?
+WHERE name = ?;
+
+-- name: ListUnknownCategoryTags :many
+SELECT name
+FROM tags
+WHERE category = -1 AND post_count > 0
+ORDER BY post_count DESC, name ASC
+LIMIT ?;
+

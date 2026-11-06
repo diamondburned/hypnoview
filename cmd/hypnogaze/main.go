@@ -83,6 +83,7 @@ func main() {
 		}),
 	)
 	client := hypnohub.FromHTTPClient(httpClient)
+	store.SetClient(client)
 
 	poller := index.NewPoller(store, client, index.PollerConfig{
 		SeedPosts:    opts.minPosts,

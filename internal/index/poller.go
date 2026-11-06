@@ -70,6 +70,11 @@ func NewPoller(store *Store, fetcher PostsFetcher, cfg PollerConfig) *Poller {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if store != nil && store.client == nil {
+		if c, ok := fetcher.(*hypnohub.Client); ok {
+			store.SetClient(c)
+		}
+	}
 	return &Poller{
 		store:   store,
 		fetcher: fetcher,
@@ -332,6 +337,12 @@ func (p *Poller) PollOnce(ctx context.Context) (int, error) {
 	upserted, err := p.store.IngestBatch(ctx, allPosts, pollTime, startedAt, completedAt, pagesFetched, false)
 	if err != nil {
 		return 0, fmt.Errorf("ingesting poll batch: %w", err)
+	}
+
+	if resolved, err := p.store.ResolveUnknownTagCategories(ctx, 20); err != nil {
+		p.cfg.Logger.WarnContext(ctx, "background tag category resolution failed", "error", err)
+	} else if resolved > 0 {
+		p.cfg.Logger.DebugContext(ctx, "resolved tag categories in background", "count", resolved)
 	}
 
 	p.cfg.Logger.InfoContext(ctx, "completed rolling index poll",

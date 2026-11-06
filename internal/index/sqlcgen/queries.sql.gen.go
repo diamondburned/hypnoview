@@ -208,6 +208,56 @@ func (q *Queries) GetPostMinMaxCreatedAt(ctx context.Context) (GetPostMinMaxCrea
 	return i, err
 }
 
+const getPostTagsWithCategory = `-- name: GetPostTagsWithCategory :many
+SELECT
+    t.name,
+    t.category,
+    t.post_count
+FROM post_tags pt
+JOIN tags t ON t.id = pt.tag_id
+WHERE pt.post_id = ?
+ORDER BY t.name ASC
+`
+
+type GetPostTagsWithCategoryRow struct {
+	Name      string
+	Category  int64
+	PostCount int64
+}
+
+// GetPostTagsWithCategory
+//
+//	SELECT
+//	    t.name,
+//	    t.category,
+//	    t.post_count
+//	FROM post_tags pt
+//	JOIN tags t ON t.id = pt.tag_id
+//	WHERE pt.post_id = ?
+//	ORDER BY t.name ASC
+func (q *Queries) GetPostTagsWithCategory(ctx context.Context, postID int64) ([]GetPostTagsWithCategoryRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPostTagsWithCategory, postID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPostTagsWithCategoryRow
+	for rows.Next() {
+		var i GetPostTagsWithCategoryRow
+		if err := rows.Scan(&i.Name, &i.Category, &i.PostCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSeedStats = `-- name: GetSeedStats :one
 SELECT COUNT(*) AS total_posts, MIN(id) AS min_id FROM posts
 `
@@ -478,7 +528,7 @@ func (q *Queries) ListGroupPosts(ctx context.Context, groupID int64) ([]Post, er
 }
 
 const listPopularTags = `-- name: ListPopularTags :many
-SELECT name, post_count
+SELECT name, post_count, category
 FROM tags
 WHERE post_count > 0
 ORDER BY post_count DESC, name ASC
@@ -488,11 +538,12 @@ LIMIT ?
 type ListPopularTagsRow struct {
 	Name      string
 	PostCount int64
+	Category  int64
 }
 
 // ListPopularTags
 //
-//	SELECT name, post_count
+//	SELECT name, post_count, category
 //	FROM tags
 //	WHERE post_count > 0
 //	ORDER BY post_count DESC, name ASC
@@ -506,10 +557,48 @@ func (q *Queries) ListPopularTags(ctx context.Context, limit int64) ([]ListPopul
 	var items []ListPopularTagsRow
 	for rows.Next() {
 		var i ListPopularTagsRow
-		if err := rows.Scan(&i.Name, &i.PostCount); err != nil {
+		if err := rows.Scan(&i.Name, &i.PostCount, &i.Category); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnknownCategoryTags = `-- name: ListUnknownCategoryTags :many
+SELECT name
+FROM tags
+WHERE category = -1 AND post_count > 0
+ORDER BY post_count DESC, name ASC
+LIMIT ?
+`
+
+// ListUnknownCategoryTags
+//
+//	SELECT name
+//	FROM tags
+//	WHERE category = -1 AND post_count > 0
+//	ORDER BY post_count DESC, name ASC
+//	LIMIT ?
+func (q *Queries) ListUnknownCategoryTags(ctx context.Context, limit int64) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listUnknownCategoryTags, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -536,6 +625,7 @@ const searchTagsByPrefix = `-- name: SearchTagsByPrefix :many
 SELECT
     name,
     post_count,
+    category,
     like(?1, name, '\') AS is_prefix
 FROM tags
 WHERE post_count > 0 AND like(?2, name, '\')
@@ -555,6 +645,7 @@ type SearchTagsByPrefixParams struct {
 type SearchTagsByPrefixRow struct {
 	Name      string
 	PostCount int64
+	Category  int64
 	IsPrefix  int64
 }
 
@@ -563,6 +654,7 @@ type SearchTagsByPrefixRow struct {
 //	SELECT
 //	    name,
 //	    post_count,
+//	    category,
 //	    like(?1, name, '\') AS is_prefix
 //	FROM tags
 //	WHERE post_count > 0 AND like(?2, name, '\')
@@ -580,7 +672,12 @@ func (q *Queries) SearchTagsByPrefix(ctx context.Context, arg SearchTagsByPrefix
 	var items []SearchTagsByPrefixRow
 	for rows.Next() {
 		var i SearchTagsByPrefixRow
-		if err := rows.Scan(&i.Name, &i.PostCount, &i.IsPrefix); err != nil {
+		if err := rows.Scan(
+			&i.Name,
+			&i.PostCount,
+			&i.Category,
+			&i.IsPrefix,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -619,6 +716,27 @@ func (q *Queries) UpdatePostGroup(ctx context.Context, arg UpdatePostGroupParams
 		arg.GroupIsLatest,
 		arg.ID,
 	)
+	return err
+}
+
+const updateTagCategoryByName = `-- name: UpdateTagCategoryByName :exec
+UPDATE tags
+SET category = ?
+WHERE name = ?
+`
+
+type UpdateTagCategoryByNameParams struct {
+	Category int64
+	Name     string
+}
+
+// UpdateTagCategoryByName
+//
+//	UPDATE tags
+//	SET category = ?
+//	WHERE name = ?
+func (q *Queries) UpdateTagCategoryByName(ctx context.Context, arg UpdateTagCategoryByNameParams) error {
+	_, err := q.db.ExecContext(ctx, updateTagCategoryByName, arg.Category, arg.Name)
 	return err
 }
 

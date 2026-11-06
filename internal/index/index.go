@@ -163,8 +163,14 @@ func (s SortMode) Normalize() (SortMode, error) {
 
 // Store manages the local SQLite database for posts, tags, and score snapshots.
 type Store struct {
-	db *sql.DB
-	q  *sqlcgen.Queries
+	db     *sql.DB
+	q      *sqlcgen.Queries
+	client *hypnohub.Client
+}
+
+// SetClient attaches an optional Hypnohub client for on-demand and background tag category resolution.
+func (s *Store) SetClient(client *hypnohub.Client) {
+	s.client = client
 }
 
 // Open opens or creates a SQLite index database at the given file path (or ":memory:").
@@ -306,9 +312,10 @@ type IndexedPost struct {
 	PreviewWidth  int    `json:"preview_width"`
 	PreviewHeight int    `json:"preview_height"`
 
-	Tags         []string  `json:"tags"`
-	FirstSeenAt  time.Time `json:"first_seen_at"`
-	LastPolledAt time.Time `json:"last_polled_at"`
+	Tags         []string           `json:"tags"`
+	TagGroups    []TagCategoryGroup `json:"tag_groups,omitempty"`
+	FirstSeenAt  time.Time          `json:"first_seen_at"`
+	LastPolledAt time.Time          `json:"last_polled_at"`
 
 	// Group / pool / sibling metrics:
 	GroupID        hypnohub.PostID `json:"group_id"`
@@ -323,6 +330,71 @@ type IndexedPost struct {
 	HotScore      float64 `json:"hot_score"`
 }
 
+// PostTag represents a single tag on a post with its category and global active post count.
+type PostTag struct {
+	Name     string           `json:"name"`
+	Category hypnohub.TagType `json:"category"`
+	Count    int64            `json:"count"`
+}
+
+// TagCategoryGroup groups tags belonging to the same Hypnohub category in upstream display order.
+type TagCategoryGroup struct {
+	Category hypnohub.TagType `json:"category"`
+	Label    string           `json:"label"`
+	Slug     string           `json:"slug"`
+	Tags     []PostTag        `json:"tags"`
+}
+
+var orderedTagCategories = []hypnohub.TagType{
+	hypnohub.TagTypeCopyright,
+	hypnohub.TagTypeCharacter,
+	hypnohub.TagTypeArtist,
+	hypnohub.TagTypeGeneral,
+	hypnohub.TagTypeMeta,
+}
+
+// BuildTagGroups groups and sorts post tags into upstream Hypnohub category order
+// (Copyright -> Character -> Artist -> General -> Meta), with tags sorted alphabetically
+// and deduplicated within each category. Empty categories are omitted.
+func BuildTagGroups(tags []PostTag) []TagCategoryGroup {
+	if len(tags) == 0 {
+		return nil
+	}
+	buckets := make(map[hypnohub.TagType][]PostTag, len(orderedTagCategories))
+	for _, t := range tags {
+		name := strings.ToLower(strings.TrimSpace(t.Name))
+		if name == "" {
+			continue
+		}
+		cat := t.Category.Normalize()
+		buckets[cat] = append(buckets[cat], PostTag{
+			Name:     name,
+			Category: cat,
+			Count:    t.Count,
+		})
+	}
+	var groups []TagCategoryGroup
+	for _, cat := range orderedTagCategories {
+		b := buckets[cat]
+		if len(b) == 0 {
+			continue
+		}
+		slices.SortFunc(b, func(a, b PostTag) int {
+			return strings.Compare(a.Name, b.Name)
+		})
+		b = slices.CompactFunc(b, func(a, b PostTag) bool {
+			return a.Name == b.Name
+		})
+		groups = append(groups, TagCategoryGroup{
+			Category: cat,
+			Label:    cat.Label(),
+			Slug:     cat.Slug(),
+			Tags:     b,
+		})
+	}
+	return groups
+}
+
 // ScorePoint is a single historical score observation for a post.
 type ScorePoint struct {
 	PollTime time.Time `json:"poll_time"`
@@ -333,6 +405,7 @@ type ScorePoint struct {
 type TagSummary struct {
 	Name      string `json:"name"`
 	PostCount int    `json:"post_count"`
+	Category  string `json:"category"`
 }
 
 // Stats contains summary statistics for the local index.
@@ -1103,6 +1176,107 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 
 	post := postToIndexed(postRow, now, tau)
 
+	tagRows, err := s.q.GetPostTagsWithCategory(ctx, int64(id))
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting tags for post %d: %w", id, err)
+	}
+
+	if s.client != nil {
+		hasUnknown := false
+		for _, r := range tagRows {
+			if r.Category == int64(hypnohub.TagCategoryUnknown) {
+				hasUnknown = true
+				break
+			}
+		}
+		if hasUnknown {
+			rCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+			scraped, scrapeErr := s.client.PostViewTags(rCtx, id)
+			if scrapeErr == nil && len(scraped) > 0 {
+				if tx, txErr := s.db.BeginTx(ctx, nil); txErr == nil {
+					qtx := s.q.WithTx(tx)
+					for i := range tagRows {
+						cat := hypnohub.TagTypeGeneral
+						if c, ok := scraped[tagRows[i].Name]; ok {
+							cat = c.Normalize()
+						}
+						tagRows[i].Category = int64(cat)
+						_ = qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
+							Category: int64(cat),
+							Name:     tagRows[i].Name,
+						})
+					}
+					_ = tx.Commit()
+				} else {
+					for i := range tagRows {
+						cat := hypnohub.TagTypeGeneral
+						if c, ok := scraped[tagRows[i].Name]; ok {
+							cat = c.Normalize()
+						}
+						tagRows[i].Category = int64(cat)
+					}
+				}
+			} else if scrapeErr == nil && len(scraped) == 0 {
+				resolved := make(map[string]hypnohub.TagType, 5)
+				count := 0
+				for _, r := range tagRows {
+					if r.Category == int64(hypnohub.TagCategoryUnknown) {
+						if count >= 5 {
+							break
+						}
+						count++
+						tagInfo, tErr := s.client.TagByName(rCtx, r.Name)
+						if tErr != nil {
+							break
+						}
+						if tagInfo != nil {
+							resolved[r.Name] = tagInfo.Type.Normalize()
+						} else {
+							resolved[r.Name] = hypnohub.TagTypeGeneral
+						}
+					}
+				}
+				if len(resolved) > 0 {
+					if tx, txErr := s.db.BeginTx(ctx, nil); txErr == nil {
+						qtx := s.q.WithTx(tx)
+						for i := range tagRows {
+							if cat, ok := resolved[tagRows[i].Name]; ok {
+								tagRows[i].Category = int64(cat)
+								_ = qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
+									Category: int64(cat),
+									Name:     tagRows[i].Name,
+								})
+							}
+						}
+						_ = tx.Commit()
+					}
+				}
+			}
+			cancel()
+		}
+	}
+
+	if len(tagRows) > 0 {
+		postTags := make([]PostTag, len(tagRows))
+		for i, r := range tagRows {
+			postTags[i] = PostTag{
+				Name:     r.Name,
+				Category: hypnohub.TagType(r.Category).Normalize(),
+				Count:    r.PostCount,
+			}
+		}
+		post.TagGroups = BuildTagGroups(postTags)
+	} else if len(post.Tags) > 0 {
+		postTags := make([]PostTag, len(post.Tags))
+		for i, name := range post.Tags {
+			postTags[i] = PostTag{
+				Name:     name,
+				Category: hypnohub.TagTypeGeneral,
+			}
+		}
+		post.TagGroups = BuildTagGroups(postTags)
+	}
+
 	// Compute HotScore using the 24h window (WindowDay, matching /popular)
 	windowStart := now.Add(-24 * time.Hour)
 	windowStartUnix := windowStart.Unix()
@@ -1180,6 +1354,68 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 	return result, nil
 }
 
+// TopTags returns the top local indexed tags ordered by post count descending.
+func (s *Store) TopTags(ctx context.Context, limit int) ([]TagSummary, error) {
+	return s.SearchTags(ctx, "", limit)
+}
+
+// ResolveUnknownTagCategories resolves up to limit tags whose category is still TagCategoryUnknown (-1)
+// using the configured Hypnohub client (or the provided tag lookup function) and commits the updates in a single transaction.
+func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int, error) {
+	if s.client == nil {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	names, err := s.q.ListUnknownCategoryTags(ctx, int64(limit))
+	if err != nil {
+		return 0, fmt.Errorf("listing unknown category tags: %w", err)
+	}
+	if len(names) == 0 {
+		return 0, nil
+	}
+
+	resolved := make(map[string]hypnohub.TagType, len(names))
+	for _, name := range names {
+		if ctx.Err() != nil {
+			break
+		}
+		tagInfo, err := s.client.TagByName(ctx, name)
+		if err != nil {
+			break
+		}
+		if tagInfo != nil {
+			resolved[name] = tagInfo.Type.Normalize()
+		} else {
+			resolved[name] = hypnohub.TagTypeGeneral
+		}
+	}
+	if len(resolved) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tag category tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	qtx := s.q.WithTx(tx)
+	for name, cat := range resolved {
+		if err := qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
+			Category: int64(cat),
+			Name:     name,
+		}); err != nil {
+			return 0, fmt.Errorf("updating tag category for %q: %w", name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing tag category tx: %w", err)
+	}
+	return len(resolved), nil
+}
+
 // SearchTags searches local indexed tags by prefix or substring, ordered by post count descending.
 func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagSummary, error) {
 	if limit <= 0 {
@@ -1197,7 +1433,11 @@ func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagS
 		}
 		tags := make([]TagSummary, len(rows))
 		for i, r := range rows {
-			tags[i] = TagSummary{Name: r.Name, PostCount: int(r.PostCount)}
+			tags[i] = TagSummary{
+				Name:      r.Name,
+				PostCount: int(r.PostCount),
+				Category:  hypnohub.TagType(r.Category).Slug(),
+			}
 		}
 		return tags, nil
 	}
@@ -1213,7 +1453,11 @@ func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagS
 	}
 	tags := make([]TagSummary, len(rows))
 	for i, r := range rows {
-		tags[i] = TagSummary{Name: r.Name, PostCount: int(r.PostCount)}
+		tags[i] = TagSummary{
+			Name:      r.Name,
+			PostCount: int(r.PostCount),
+			Category:  hypnohub.TagType(r.Category).Slug(),
+		}
 	}
 	return tags, nil
 }

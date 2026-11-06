@@ -60,4 +60,5 @@ type Tag struct {
 	ID        int64
 	Name      string
 	PostCount int64
+	Category  int64
 }
