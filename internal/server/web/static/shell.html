@@ -15,6 +15,7 @@
 	<meta name="apple-mobile-web-app-capable" content="yes" />
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 	<meta name="apple-mobile-web-app-title" content="hypnogaze" />
+	<meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true}' />
 
 	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
 
@@ -59,8 +60,8 @@
 					<span class="brand-text">hypnogaze</span>
 				</a>
 				<nav class="topbar-nav" aria-label="Main navigation">
-					<a href="/" class="nav-btn active" aria-current="page">Browse</a>
-					<a href="/popular" class="nav-btn">Popular</a>
+					<a href="/" class="nav-btn" id="pwa-shell-nav-browse">Browse</a>
+					<a href="/popular" class="nav-btn" id="pwa-shell-nav-popular">Popular</a>
 				</nav>
 			</div>
 		</div>
@@ -73,10 +74,10 @@
 				<p class="pwa-shell-status">Connecting to hypnogaze…</p>
 			</div>
 
-			<div id="pwa-shell-offline" class="pwa-shell-card" style="display: none;">
+			<div id="pwa-shell-offline" class="pwa-shell-card" hidden>
 				<img src="/static/spiral.svg" alt="" width="48" height="48" />
 				<h2 class="pwa-shell-title">Server Unreachable</h2>
-				<p class="pwa-shell-msg">Could not reach gaze.d14.pet. Check your connection and try again.</p>
+				<p class="pwa-shell-msg">Could not reach <span id="pwa-shell-host">gaze.d14.pet</span>. Check your connection and try again.</p>
 				<button type="button" id="pwa-shell-retry-btn" class="pwa-shell-retry-btn">
 					<span class="material-symbols-rounded" aria-hidden="true">refresh</span>
 					<span>Retry</span>
@@ -91,6 +92,24 @@
 		const loadingCard = document.getElementById("pwa-shell-loading");
 		const offlineCard = document.getElementById("pwa-shell-offline");
 		const retryBtn = document.getElementById("pwa-shell-retry-btn");
+		const hostEl = document.getElementById("pwa-shell-host");
+		if (hostEl) {
+			hostEl.textContent = window.location.host || "gaze.d14.pet";
+		}
+
+		// Dynamically highlight active nav link based on current path
+		const isPopular = window.location.pathname.startsWith("/popular");
+		const browseNav = document.getElementById("pwa-shell-nav-browse");
+		const popularNav = document.getElementById("pwa-shell-nav-popular");
+		if (browseNav && popularNav) {
+			if (isPopular) {
+				popularNav.classList.add("active");
+				popularNav.setAttribute("aria-current", "page");
+			} else {
+				browseNav.classList.add("active");
+				browseNav.setAttribute("aria-current", "page");
+			}
+		}
 
 		// Determine target URL to load, stripping `pwa=1`
 		const curUrl = new URL(window.location.href);
@@ -101,16 +120,20 @@
 		const cleanTarget = curUrl.pathname + curUrl.search + curUrl.hash || "/";
 
 		function showOffline() {
-			if (loadingCard) loadingCard.style.display = "none";
-			if (offlineCard) offlineCard.style.display = "flex";
+			if (loadingCard) loadingCard.hidden = true;
+			if (offlineCard) offlineCard.hidden = false;
 		}
 
 		function showLoading() {
-			if (offlineCard) offlineCard.style.display = "none";
-			if (loadingCard) loadingCard.style.display = "flex";
+			if (offlineCard) offlineCard.hidden = true;
+			if (loadingCard) loadingCard.hidden = false;
 		}
 
+		let inFlight = false;
+
 		async function attemptTransition() {
+			if (inFlight) return;
+			inFlight = true;
 			showLoading();
 			try {
 				const res = await fetch(cleanTarget, {
@@ -118,10 +141,11 @@
 						"X-Hypnogaze-Shell": "1",
 						"Accept": "text/html"
 					},
-					cache: "no-store"
+					cache: "no-store",
+					signal: AbortSignal.timeout(10000)
 				});
 
-				if (!res.ok) {
+				if (!res.headers.get("Content-Type")?.includes("text/html")) {
 					showOffline();
 					return;
 				}
@@ -164,15 +188,15 @@
 
 					// Load or execute HTMX & app scripts
 					function ensureScript(src, type, onLoad) {
-						let script = document.querySelector(`script[src="${src}"]`);
-						if (!script) {
-							script = document.createElement("script");
+						const existing = document.querySelector(`script[src="${src}"]`);
+						if (!existing) {
+							const script = document.createElement("script");
 							script.src = src;
 							if (type) script.type = type;
-							script.onload = onLoad;
+							script.onload = () => onLoad(false);
 							document.body.appendChild(script);
-						} else if (onLoad) {
-							onLoad();
+						} else {
+							onLoad(true);
 						}
 					}
 
@@ -180,8 +204,8 @@
 						if (window.htmx) {
 							window.htmx.process(document.body);
 						}
-						ensureScript("/static/app.js", "module", () => {
-							if (window.hypnogazeInit) {
+						ensureScript("/static/app.js", "module", (alreadyLoaded) => {
+							if (alreadyLoaded && window.hypnogazeInit) {
 								window.hypnogazeInit();
 							}
 						});
@@ -189,6 +213,8 @@
 				}, 150);
 			} catch (err) {
 				showOffline();
+			} finally {
+				inFlight = false;
 			}
 		}
 

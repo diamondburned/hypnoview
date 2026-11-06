@@ -56,7 +56,7 @@ pkgs.testers.runNixOSTest {
     assert "hypnogaze-v-" in sw_raw, f"sw.js missing content-hash cache version: {sw_raw[:200]}"
     assert "__CACHE_VERSION__" not in sw_raw, "sw.js contains unresolved __CACHE_VERSION__"
 
-    shell_html = machine.succeed("curl -fsS http://127.0.0.1:8080/shell.html")
+    shell_html = machine.succeed("curl -fsS http://127.0.0.1:8080/static/shell.html")
     assert "<svg" not in shell_html, "shell.html contains inline <svg>"
     assert "pwa-shell-stage" in shell_html, "shell.html missing pwa-shell-stage"
 

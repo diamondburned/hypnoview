@@ -247,7 +247,6 @@ func NewServer(store *index.Store, devMode bool) *Server {
 	s.mux.Get("/robots.txt", s.handleRobotsTxt)
 	s.mux.Get("/manifest.webmanifest", s.handleManifest)
 	s.mux.Get("/sw.js", s.handleServiceWorker)
-	s.mux.Get("/shell.html", s.handleShell)
 	api.RegisterRoutes(s.mux, s.store)
 
 	s.mux.Get("/", s.handleBrowse)
@@ -577,24 +576,23 @@ var (
 
 func computeStaticCacheHash() string {
 	h := sha256.New()
-	files := []string{
-		"static/style.css",
-		"static/app.js",
-		"static/htmx.min.js",
-		"static/shell.html",
-		"static/manifest.webmanifest",
-		"static/spiral.svg",
-		"static/icon-192.png",
-		"static/icon-512.png",
-		"static/icon-maskable-512.png",
-		"static/apple-touch-icon.png",
-	}
-	for _, f := range files {
-		data, err := staticFS.ReadFile(f)
-		if err == nil {
-			h.Write([]byte(f))
-			h.Write(data)
+	err := fs.WalkDir(staticFS, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := staticFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(path))
+		h.Write(data)
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to hash static files: %v", err))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
@@ -609,14 +607,15 @@ func getCacheVersion(devMode bool) string {
 	return staticCacheHash
 }
 
-func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
-	var data []byte
-	var err error
+func (s *Server) readStaticFile(name string) ([]byte, error) {
 	if s.devMode {
-		data, err = fs.ReadFile(devWebFS(), "static/manifest.webmanifest")
-	} else {
-		data, err = staticFS.ReadFile("static/manifest.webmanifest")
+		return fs.ReadFile(devWebFS(), name)
 	}
+	return staticFS.ReadFile(name)
+}
+
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
+	data, err := s.readStaticFile("static/manifest.webmanifest")
 	if err != nil {
 		http.Error(w, "manifest not found", http.StatusNotFound)
 		return
@@ -627,13 +626,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
-	var swData []byte
-	var err error
-	if s.devMode {
-		swData, err = fs.ReadFile(devWebFS(), "static/sw.js")
-	} else {
-		swData, err = staticFS.ReadFile("static/sw.js")
-	}
+	swData, err := s.readStaticFile("static/sw.js")
 	if err != nil {
 		http.Error(w, "service worker not found", http.StatusNotFound)
 		return
@@ -647,23 +640,6 @@ func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Service-Worker-Allowed", "/")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(rendered)
-}
-
-func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
-	var data []byte
-	var err error
-	if s.devMode {
-		data, err = fs.ReadFile(devWebFS(), "static/shell.html")
-	} else {
-		data, err = staticFS.ReadFile("static/shell.html")
-	}
-	if err != nil {
-		http.Error(w, "shell not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
 }
 
 type feedMode string

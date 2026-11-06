@@ -1470,6 +1470,15 @@ function initLightbox() {
 function registerServiceWorker() {
 	if (!("serviceWorker" in navigator)) return;
 
+	const hadController = !!navigator.serviceWorker.controller;
+	let refreshing = false;
+	navigator.serviceWorker.addEventListener("controllerchange", () => {
+		if (!refreshing && hadController) {
+			refreshing = true;
+			window.location.reload();
+		}
+	});
+
 	navigator.serviceWorker.register("/sw.js", { scope: "/" })
 		.then((reg) => {
 			setInterval(() => {
@@ -1485,12 +1494,6 @@ function registerServiceWorker() {
 		.catch((err) => {
 			console.warn("ServiceWorker registration failed:", err);
 		});
-
-	let refreshing = false;
-	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		if (refreshing) return;
-		refreshing = true;
-	});
 }
 
 function attachGlobalListeners() {

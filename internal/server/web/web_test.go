@@ -533,31 +533,57 @@ func TestPWAManifestAndServiceWorker(t *testing.T) {
 		t.Errorf("sw.js does not contain resolved content hash cache name")
 	}
 
-	// 3. GET /shell.html and GET /static/shell.html
-	for _, shellPath := range []string{"/shell.html", "/static/shell.html"} {
-		shellReq := httptest.NewRequest(http.MethodGet, shellPath, nil)
-		shellRec := httptest.NewRecorder()
-		srv.ServeHTTP(shellRec, shellReq)
+	// 3. GET /static/shell.html and verify /shell.html is 404
+	redundantShellReq := httptest.NewRequest(http.MethodGet, "/shell.html", nil)
+	redundantShellRec := httptest.NewRecorder()
+	srv.ServeHTTP(redundantShellRec, redundantShellReq)
+	if redundantShellRec.Code != http.StatusNotFound {
+		t.Errorf("GET /shell.html code = %d, want 404 Not Found", redundantShellRec.Code)
+	}
 
-		if shellRec.Code != http.StatusOK {
-			t.Fatalf("GET %s code = %d, want %d", shellPath, shellRec.Code, http.StatusOK)
-		}
-		shellBody := shellRec.Body.String()
-		if strings.Contains(shellBody, "<svg") {
-			t.Errorf("%s contains inline <svg> tag (forbidden by rule)", shellPath)
-		}
-		if !strings.Contains(shellBody, `id="pwa-shell-stage"`) {
-			t.Errorf("%s missing #pwa-shell-stage", shellPath)
-		}
-		if !strings.Contains(shellBody, `id="pwa-shell-loading"`) {
-			t.Errorf("%s missing #pwa-shell-loading", shellPath)
-		}
-		if !strings.Contains(shellBody, `id="pwa-shell-offline"`) {
-			t.Errorf("%s missing #pwa-shell-offline", shellPath)
-		}
-		if !strings.Contains(shellBody, `X-Hypnogaze-Shell`) {
-			t.Errorf("%s missing X-Hypnogaze-Shell transition logic", shellPath)
-		}
+	shellReq := httptest.NewRequest(http.MethodGet, "/static/shell.html", nil)
+	shellRec := httptest.NewRecorder()
+	srv.ServeHTTP(shellRec, shellReq)
+
+	if shellRec.Code != http.StatusOK {
+		t.Fatalf("GET /static/shell.html code = %d, want %d", shellRec.Code, http.StatusOK)
+	}
+	shellBody := shellRec.Body.String()
+	if strings.Contains(shellBody, "<svg") {
+		t.Errorf("/static/shell.html contains inline <svg> tag (forbidden by rule)")
+	}
+	if !strings.Contains(shellBody, `id="pwa-shell-stage"`) {
+		t.Errorf("/static/shell.html missing #pwa-shell-stage")
+	}
+	if !strings.Contains(shellBody, `id="pwa-shell-loading"`) {
+		t.Errorf("/static/shell.html missing #pwa-shell-loading")
+	}
+	if !strings.Contains(shellBody, `id="pwa-shell-offline"`) {
+		t.Errorf("/static/shell.html missing #pwa-shell-offline")
+	}
+	if !strings.Contains(shellBody, `X-Hypnogaze-Shell`) {
+		t.Errorf("/static/shell.html missing X-Hypnogaze-Shell transition logic")
+	}
+	if !strings.Contains(shellBody, `<meta name="htmx-config"`) {
+		t.Errorf("/static/shell.html missing <meta name=\"htmx-config\"")
+	}
+	if !strings.Contains(shellBody, `AbortSignal.timeout`) {
+		t.Errorf("/static/shell.html missing AbortSignal.timeout")
+	}
+
+	// Verify app.js contains controllerchange reload logic
+	appReq := httptest.NewRequest(http.MethodGet, "/static/app.js", nil)
+	appRec := httptest.NewRecorder()
+	srv.ServeHTTP(appRec, appReq)
+	if appRec.Code != http.StatusOK {
+		t.Fatalf("GET /static/app.js code = %d, want %d", appRec.Code, http.StatusOK)
+	}
+	appBody := appRec.Body.String()
+	if !strings.Contains(appBody, "window.location.reload()") {
+		t.Errorf("app.js missing window.location.reload() in controllerchange handler")
+	}
+	if !strings.Contains(appBody, "controllerchange") {
+		t.Errorf("app.js missing controllerchange listener")
 	}
 
 	// 4. PNG icons magic bytes and Content-Type

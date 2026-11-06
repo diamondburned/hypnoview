@@ -18,6 +18,7 @@
 	--on-surface:                light-dark(oklch(0.18 0.015 335),  oklch(0.93 0.01 340));
 	--on-surface-variant:        light-dark(oklch(0.44 0.025 335),  oklch(0.75 0.02 335));
 	--outline-variant:           light-dark(oklch(0.84 0.02 340),   oklch(0.25 0.025 335));
+	--scrim:                     oklch(0 0 0);
 
 	/* Sleeker Material Design 3 Radii */
 	--radius-xs: 4px;
@@ -2415,13 +2416,17 @@ html[data-thumb-fit="contain"] .card-media-link img {
 	background: var(--surface-container);
 	border: 1px solid var(--outline-variant);
 	border-radius: var(--radius-lg);
-	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+	box-shadow: 0 4px 24px color-mix(in oklch, var(--scrim) 15%, transparent);
+}
+
+.pwa-shell-card[hidden] {
+	display: none !important;
 }
 
 .pwa-shell-spiral {
 	display: block;
 	animation: pwa-spiral-pulse 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-	filter: drop-shadow(0 0 16px rgba(248, 113, 160, 0.35));
+	filter: drop-shadow(0 0 16px color-mix(in oklch, var(--primary) 35%, transparent));
 }
 
 @keyframes pwa-spiral-pulse {
