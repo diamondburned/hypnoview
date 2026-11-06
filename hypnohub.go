@@ -342,7 +342,7 @@ func (c *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	return &SearchTagsResult{resp.Tags}, nil
 }
 
-// ListTagsPage fetches a page of tags from the Hypnohub DAPI tag index ordered by count descending.
+// ListTagsPage fetches a page of tags from the Hypnohub DAPI tag index ordered by count (orderby=count).
 // Each page returns up to limit tags (max 1000).
 func (c *Client) ListTagsPage(ctx context.Context, pageOffset, limit int) ([]Tag, error) {
 	if limit <= 0 {

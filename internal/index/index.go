@@ -1431,8 +1431,11 @@ func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hyp
 	return updated, nil
 }
 
-// ResolveUnknownTagCategories resolves up to limit tags whose category is still TagTypeUnknown (-1)
+// ResolveUnknownTagCategories resolves tags whose category is still TagTypeUnknown (-1)
 // using the configured Hypnohub client and commits resolved updates in a single transaction.
+// The limit parameter caps individual TagByName fallback lookups per cycle, while the bulk
+// page sweep can resolve up to 1,000 tags per cycle (so the returned count of changed rows
+// may exceed limit).
 func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int, error) {
 	if s.client == nil {
 		return 0, nil
@@ -1448,17 +1451,12 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		return 0, nil
 	}
 
-	unknownSet := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		unknownSet[name] = struct{}{}
-	}
-
 	rCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	updates := make(map[string]hypnohub.TagType, len(names))
 
-	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve unknown tags in 1 request.
+	// First attempt a bulk 1000-tag DAPI page sweep ordered by count to resolve unknown tags in 1 request.
 	page := int(s.tagSweepPage.Load())
 	bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000)
 	if bulkErr != nil {
@@ -1466,21 +1464,19 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 	} else if len(bulkTags) == 0 {
 		s.tagSweepPage.Store(0)
 	} else {
-		s.tagSweepPage.Store(int64((page + 1) % 50))
+		s.tagSweepPage.Store(int64(page + 1))
 		for _, bt := range bulkTags {
-			if len(updates) >= limit {
-				break
-			}
 			name := strings.ToLower(strings.TrimSpace(bt.Name))
-			if _, isUnknown := unknownSet[name]; isUnknown && name != "" {
-				updates[name] = bt.Type.Normalize()
+			if name != "" && bt.Type == bt.Type.Normalize() {
+				updates[name] = bt.Type
 			}
 		}
 	}
 
+	lookups := 0
 	consecutiveErrors := 0
 	for _, name := range names {
-		if len(updates) >= limit {
+		if lookups >= limit {
 			break
 		}
 		if _, alreadyResolved := updates[name]; alreadyResolved {
@@ -1489,6 +1485,7 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		if rCtx.Err() != nil {
 			break
 		}
+		lookups++
 		tagInfo, err := s.client.TagByName(rCtx, name)
 		if err != nil {
 			slog.Warn("failed to resolve tag category", "tag", name, "err", err)

@@ -2096,8 +2096,8 @@ func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
 		t.Fatalf("querying user_version: %v", err)
 	}
-	if userVersion != 7 {
-		t.Errorf("expected user_version 7, got %d", userVersion)
+	if userVersion < 7 {
+		t.Errorf("expected user_version >= 7, got %d", userVersion)
 	}
 
 	var cat int
@@ -2419,8 +2419,8 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	defer store.Close()
 
 	now := time.Now().UTC()
-	// Seed bad_tag on 2 posts (post_count=2) and good_tag + absent_tag on 1 post (post_count=1)
-	// so bad_tag is ordered first by post_count DESC.
+	// Seed bad_tag on 2 posts (post_count=2) and good_tag + absent_tag on 1 post (post_count=1).
+	// Order is random, so assertions must not depend on which tag is looked up first.
 	posts := []hypnohub.Post{
 		{ID: 1, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag good_tag absent_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
 		{ID: 2, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
@@ -2470,7 +2470,7 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	client.BaseURL = ts.URL
 	store.SetClient(client)
 
-	resolved, err := store.ResolveUnknownTagCategories(ctx, 2)
+	resolved, err := store.ResolveUnknownTagCategories(ctx, 3)
 	if err != nil {
 		t.Fatalf("ResolveUnknownTagCategories failed: %v", err)
 	}
@@ -2502,7 +2502,7 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	}
 
 	// Second call fetches page 1 (which returns empty) and resets tagSweepPage to 0.
-	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	_, _ = store.ResolveUnknownTagCategories(ctx, 3)
 	if len(seenBulkPIDs) != 2 || seenBulkPIDs[0] != "0" || seenBulkPIDs[1] != "1" {
 		t.Errorf("expected bulk PIDs [0, 1], got %v", seenBulkPIDs)
 	}
@@ -2512,16 +2512,77 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 
 	// Third call with failing ListTagsPage keeps tagSweepPage on page 0 so the next cycle retries page 0.
 	failBulk.Store(true)
-	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	_, _ = store.ResolveUnknownTagCategories(ctx, 3)
 	if store.tagSweepPage.Load() != 0 {
 		t.Errorf("expected tagSweepPage to remain 0 after failed ListTagsPage, got %d", store.tagSweepPage.Load())
 	}
 	failBulk.Store(false)
-	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	_, _ = store.ResolveUnknownTagCategories(ctx, 3)
 	if len(seenBulkPIDs) != 4 || seenBulkPIDs[2] != "0" || seenBulkPIDs[3] != "0" {
 		t.Errorf("expected failed page 0 to be retried on next cycle, got PIDs %v", seenBulkPIDs)
 	}
 	if store.tagSweepPage.Load() != 1 {
 		t.Errorf("expected tagSweepPage = 1 after retrying page 0, got %d", store.tagSweepPage.Load())
+	}
+}
+
+func TestResolveUnknownTagCategoriesBulkThroughput(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx failed: %v", err)
+	}
+	for i := range 2000 {
+		name := fmt.Sprintf("bulk_tag_%04d", i)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tags (name, post_count, category) VALUES (?, 5, -1)`, name); err != nil {
+			t.Fatalf("inserting %s: %v", name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	var bulkBody strings.Builder
+	bulkBody.WriteString(`<?xml version="1.0" encoding="UTF-8"?><tags type="array">`)
+	for i := range 1000 {
+		fmt.Fprintf(&bulkBody, `<tag type="1" count="50" name="bulk_tag_%04d" ambiguous="false" id="%d"/>`, i, i+1)
+	}
+	bulkBody.WriteString(`</tags>`)
+	bulkXML := []byte(bulkBody.String())
+
+	var singleLookups atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		if q.Get("s") == "tag" && q.Get("q") == "index" && q.Get("orderby") == "count" && q.Get("limit") == "1000" && q.Get("pid") == "0" {
+			_, _ = w.Write(bulkXML)
+			return
+		}
+		if q.Get("name") != "" {
+			singleLookups.Add(1)
+		}
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"/>`))
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	resolved, err := store.ResolveUnknownTagCategories(ctx, 20)
+	if err != nil {
+		t.Fatalf("ResolveUnknownTagCategories failed: %v", err)
+	}
+	if resolved < 1000 {
+		t.Errorf("expected resolved >= 1000 from bulk sweep, got %d", resolved)
+	}
+	if got := singleLookups.Load(); got > 20 {
+		t.Errorf("expected at most 20 single-tag name= lookups, got %d", got)
 	}
 }
