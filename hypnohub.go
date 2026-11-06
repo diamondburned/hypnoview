@@ -81,18 +81,78 @@ func (d *Date) UnmarshalText(b []byte) error {
 type Rating string
 
 const (
-	RatingSafe         Rating = "safe"
-	RatingQuestionable Rating = "questionable"
-	RatingExplicit     Rating = "explicit"
+	RatingSafe         Rating = "s"
+	RatingQuestionable Rating = "q"
+	RatingExplicit     Rating = "e"
 )
+
+// Normalize converts full or short rating names to the canonical short form ("s", "q", "e").
+func (r Rating) Normalize() Rating {
+	switch strings.ToLower(strings.TrimSpace(string(r))) {
+	case "s", "safe":
+		return RatingSafe
+	case "q", "questionable":
+		return RatingQuestionable
+	case "e", "explicit":
+		return RatingExplicit
+	default:
+		return r
+	}
+}
+
+// Label returns a human-readable label for the rating.
+func (r Rating) Label() string {
+	switch r.Normalize() {
+	case RatingSafe:
+		return "Safe"
+	case RatingQuestionable:
+		return "Questionable"
+	case RatingExplicit:
+		return "Explicit"
+	default:
+		return string(r)
+	}
+}
 
 // TagsList is a list of tags from the hypnohub API. It is a space-separated
 // list of tags.
 type TagsList string
 
-// Split splits the tags list into a slice of tags.
+// Split splits the tags list into a slice of non-empty tags.
 func (t TagsList) Split() []string {
-	return strings.Split(string(t), " ")
+	return strings.Fields(string(t))
+}
+
+// FileExt returns the lowercase file extension (without leading dot) of the post's FileURL.
+func (p Post) FileExt() string {
+	u := p.FileURL
+	if idx := strings.IndexByte(u, '?'); idx != -1 {
+		u = u[:idx]
+	}
+	if idx := strings.LastIndexByte(u, '.'); idx != -1 {
+		return strings.ToLower(u[idx+1:])
+	}
+	return ""
+}
+
+// IsVideo returns whether the post's original file is a video (mp4 or webm).
+func (p Post) IsVideo() bool {
+	switch p.FileExt() {
+	case "mp4", "webm":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsAnimated returns whether the post is animated (video or gif) or tagged animated.
+func (p Post) IsAnimated() bool {
+	switch p.FileExt() {
+	case "mp4", "webm", "gif":
+		return true
+	default:
+		return false
+	}
 }
 
 // TagID is a tag ID.
@@ -144,14 +204,35 @@ type SearchPostsResult struct {
 	Offset int    `json:"offset"`
 }
 
-// SearchPosts searches for posts on Hypnohub.
+// SearchPostsOptions specifies options for searching posts.
+type SearchPostsOptions struct {
+	Query      string
+	PageOffset int
+	Limit      int // up to MaxSearchPostsLimit (1000); 0 uses server default (100)
+}
+
+// MaxSearchPostsLimit is the maximum number of posts Hypnohub returns per page.
+const MaxSearchPostsLimit = 1000
+
+// SearchPosts searches for posts on Hypnohub using the default page size (100).
 func (d *Client) SearchPosts(ctx context.Context, query string, postOffset int) (*SearchPostsResult, error) {
+	return d.SearchPostsWithOptions(ctx, SearchPostsOptions{
+		Query:      query,
+		PageOffset: postOffset,
+	})
+}
+
+// SearchPostsWithOptions searches for posts on Hypnohub with custom pagination options.
+func (d *Client) SearchPostsWithOptions(ctx context.Context, opts SearchPostsOptions) (*SearchPostsResult, error) {
 	q := url.Values{
 		"page": {"dapi"},
 		"s":    {"post"},
 		"q":    {"index"},
-		"tags": {query},
-		"pid":  {strconv.Itoa(int(postOffset))},
+		"tags": {opts.Query},
+		"pid":  {strconv.Itoa(opts.PageOffset)},
+	}
+	if opts.Limit > 0 {
+		q.Set("limit", strconv.Itoa(opts.Limit))
 	}
 	url := "https://hypnohub.net/index.php?" + q.Encode()
 

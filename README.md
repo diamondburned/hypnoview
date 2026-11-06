@@ -5,15 +5,11 @@
 
 ---
 
-Hypnoview provides a frontend for the [Hypnohub](https://hypnohub.net) image
-board. Currently, it provides Go libraries for interacting with the Hypnohub
-API, as well as several smaller frontend utilities.
+Hypnoview provides a Go client library for the [Hypnohub](https://hypnohub.net)
+image board, a rolling 2-hour SQLite popularity indexer, a Huma OpenAPI REST
+API, and a mobile-friendly web frontend (`cmd/hypnoview`).
 
-The actual frontend is a work in progress, and is not yet available.
-
-I'm currently hosting the [Popular Query app](./cmd/popular-query-app) on
-[popularhypnohub.diamondx.pet](https://popularhypnohub.diamondx.pet). This
-app provides a way to get the most popular posts on Hypnohub, which is a feature
-that was removed from the site.
+See [docs/rolling-index-design.md](./docs/rolling-index-design.md) for the
+v2 rolling popularity index and frontend architecture.
 
 </details>

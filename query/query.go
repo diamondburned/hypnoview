@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"libdb.so/hypnoview/lib/hypnohub"
+	"libdb.so/hypnoview"
 )
 
 // Query represents a search query for the Hypnohub API.
@@ -82,7 +82,16 @@ func MD5(md5 string) Query {
 
 // Rating adds a rating filter to the given query.
 func Rating(rating hypnohub.Rating) Query {
-	return Query{"rating:" + string(rating)}
+	switch rating.Normalize() {
+	case hypnohub.RatingSafe:
+		return Query{"rating:safe"}
+	case hypnohub.RatingQuestionable:
+		return Query{"rating:questionable"}
+	case hypnohub.RatingExplicit:
+		return Query{"rating:explicit"}
+	default:
+		return Query{"rating:" + string(rating)}
+	}
 }
 
 // Pool adds a pool filter to the given query.

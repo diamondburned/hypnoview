@@ -7,6 +7,9 @@ pkgs.mkShell {
 		gotools
 		deno
 		nodejs
+		just
+		reflex
+		sqlc
 	];
 
 	shellHook = ''

@@ -1,0 +1,7 @@
+.draft/
+*.db
+*.db-shm
+*.db-wal
+/hypnoview
+result
+result-*

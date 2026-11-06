@@ -1,0 +1,110 @@
+{{ define "content" }}
+<div class="post-detail">
+	<div class="post-detail-nav">
+		<a href="{{ .BackURL }}" class="page-btn">← Back to Feed</a>
+	</div>
+
+	<div class="post-detail-grid">
+		<div class="post-media-column">
+			<div class="post-media-box">
+				{{ if isVideoExt .Post.FileExt }}
+				<video
+					src="{{ .Post.FileURL }}"
+					poster="{{ thumbURL .Post }}"
+					controls
+					loop
+					playsinline
+					preload="metadata"
+					class="detail-media"
+				></video>
+				{{ else if eq .Post.FileExt "gif" }}
+				<img
+					src="{{ .Post.FileURL }}"
+					alt="Post #{{ .Post.ID }}"
+					width="{{ .Post.Width }}"
+					height="{{ .Post.Height }}"
+					referrerpolicy="no-referrer"
+					class="detail-media"
+				/>
+				{{ else }}
+				<img
+					id="detail-img"
+					src="{{ if .Post.SampleURL }}{{ .Post.SampleURL }}{{ else }}{{ .Post.PreviewURL }}{{ end }}"
+					data-full-src="{{ .Post.FileURL }}"
+					data-hd-src="{{ .Post.FileURL }}"
+					alt="Post #{{ .Post.ID }}"
+					width="{{ .Post.Width }}"
+					height="{{ .Post.Height }}"
+					referrerpolicy="no-referrer"
+					class="detail-media"
+				/>
+				{{ end }}
+			</div>
+
+			<div class="post-detail-actions">
+				{{ if and .Post.SampleURL (ne .Post.SampleURL .Post.FileURL) (not (isAnimatedExt .Post.FileExt)) }}
+				<button type="button" id="detail-hd-toggle" class="page-btn">Switch to HD Original</button>
+				{{ end }}
+				<a href="{{ .Post.FileURL }}" target="_blank" rel="noopener noreferrer" class="page-btn">
+					Original ({{ .Post.Width }}×{{ .Post.Height }} {{ upper .Post.FileExt }}) ↗
+				</a>
+				<a href="https://hypnohub.net/index.php?page=post&s=view&id={{ .Post.ID }}" target="_blank" rel="noopener noreferrer" class="page-btn">
+					Open on Hypnohub ↗
+				</a>
+			</div>
+		</div>
+
+		<aside class="post-sidebar">
+			<div class="sidebar-card">
+				<h2>Post #{{ .Post.ID }}</h2>
+				<dl class="meta-list">
+					<div>
+						<dt>Score</dt>
+						<dd><strong>★ {{ .Post.Score }}</strong></dd>
+					</div>
+					<div>
+						<dt>
+							<span class="has-tooltip" data-tooltip="Popularity score combines recent upvote velocity with total score and age decay." tabindex="0" role="button" aria-label="Popularity score description">Popularity Score</span>
+						</dt>
+						<dd>
+							<span class="detail-velocity" title="Popularity Score: {{ hotCount .Post.HotScore }}">
+								<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
+								<strong>{{ hotCount .Post.HotScore }}</strong>
+							</span>
+						</dd>
+					</div>
+					<div>
+						<dt>Uploaded</dt>
+						<dd title="{{ .Post.CreatedAt }}">{{ timeAgo .Post.CreatedAt }} ({{ .Post.CreatedAt.Format "2006-01-02 15:04 UTC" }})</dd>
+					</div>
+					<div>
+						<dt>Rating</dt>
+						<dd>{{ .Post.Rating.Label }}</dd>
+					</div>
+					<div>
+						<dt>Dimensions</dt>
+						<dd>{{ .Post.Width }} × {{ .Post.Height }} ({{ upper .Post.FileExt }})</dd>
+					</div>
+					{{ if .Post.Source }}
+					<div>
+						<dt>Source</dt>
+						<dd class="truncate"><a href="{{ .Post.Source }}" target="_blank" rel="noopener noreferrer">{{ .Post.Source }}</a></dd>
+					</div>
+					{{ end }}
+				</dl>
+			</div>
+
+			<div class="sidebar-card">
+				<h3>Tags ({{ len .Post.Tags }})</h3>
+				<div class="tag-cloud">
+					{{ range .Post.Tags }}
+					<a href="/?tags={{ . }}" class="tag-chip">
+						<span>{{ . }}</span>
+					</a>
+					{{ end }}
+				</div>
+			</div>
+		</aside>
+	</div>
+</div>
+{{ end }}

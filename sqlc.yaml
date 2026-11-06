@@ -1,0 +1,19 @@
+version: "2"
+sql:
+  - engine: sqlite
+    schema: internal/index/schema.sql
+    queries: internal/index/queries.sql
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/index/sqlcgen
+        sql_package: database/sql
+        emit_sql_as_comment: true
+        emit_pointers_for_null_types: true
+        output_db_file_name: db.gen.go
+        output_models_file_name: models.gen.go
+        output_files_suffix: .gen
+        initialisms:
+          - id
+          - md5
+          - url

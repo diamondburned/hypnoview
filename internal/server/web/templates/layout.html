@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b10" />
+	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f9" />
+	<meta name="referrer" content="same-origin" />
+	<title>{{ .Title }}</title>
+	<link rel="icon" href="/static/spiral.svg" type="image/svg+xml" />
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
+	<script>
+	document.documentElement.classList.add("js");
+	(function () {
+		try {
+			var raw = localStorage.getItem("hypnoview.settings");
+			if (!raw) return;
+			var s = JSON.parse(raw);
+			var el = document.documentElement;
+			if (s.theme === "light" || s.theme === "dark") {
+				el.dataset.theme = s.theme;
+			}
+			if (s.viewMode === "single" || s.viewMode === "grid") {
+				el.dataset.viewMode = s.viewMode;
+			}
+			var maxCols = parseInt(s.maxColumns, 10);
+			if (maxCols >= 1 && maxCols <= 10) {
+				el.style.setProperty("--grid-max-cols", String(maxCols));
+			}
+			var minW = parseInt(s.minColumnWidth, 10);
+			if (minW >= 150 && minW <= 420) {
+				el.style.setProperty("--grid-min-width", minW + "px");
+			}
+		} catch (_) {}
+	})();
+	</script>
+	<link rel="stylesheet" href="/static/style.css" />
+	<noscript>
+		<style>
+			#detail-hd-toggle, #lightbox {
+				display: none !important;
+			}
+		</style>
+	</noscript>
+	<script src="/static/htmx.min.js" defer></script>
+	<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+	<input type="checkbox" id="mobile-filter-state" class="sr-only" hidden aria-hidden="true" tabindex="-1" />
+	<header class="topbar">
+		<div class="topbar-inner">
+			<div class="topbar-left">
+				<a href="/" class="brand">
+					<span class="brand-icon-bubble" aria-label="Hypnoview icon">
+						<img src="/static/spiral.svg" class="brand-spiral-svg" alt="" width="20" height="20" aria-hidden="true" />
+					</span>
+					<span class="brand-text">hypnoview</span>
+				</a>
+				<nav class="topbar-nav" aria-label="Main navigation">
+					<a href="/" class="nav-btn {{ if eq .ActiveNav "browse" }}active{{ end }}" {{ if eq .ActiveNav "browse" }}aria-current="page"{{ end }}>Browse</a>
+					<a href="/popular" class="nav-btn {{ if eq .ActiveNav "popular" }}active{{ end }}" {{ if eq .ActiveNav "popular" }}aria-current="page"{{ end }}>Popular</a>
+				</nav>
+			</div>
+			<div class="topbar-right">
+				<button
+					type="button"
+					id="view-mode-toggle"
+					class="icon-btn view-mode-toggle"
+					aria-label="Toggle feed view mode"
+					title="Toggle Single-Column / Grid View"
+				>
+					<span class="material-symbols-rounded view-mode-icon-grid" aria-hidden="true">view_agenda</span>
+					<span class="material-symbols-rounded view-mode-icon-single" aria-hidden="true">grid_view</span>
+				</button>
+				<label
+					for="mobile-filter-state"
+					id="mobile-filter-toggle"
+					class="mobile-filter-toggle"
+					role="button"
+					tabindex="0"
+					aria-controls="index-sidebar"
+					aria-label="Toggle search and filters"
+				>
+					<span class="material-symbols-rounded" aria-hidden="true">tune</span>
+					<span>Filters</span>
+				</label>
+				<button
+					type="button"
+					id="settings-toggle"
+					class="icon-btn settings-toggle"
+					aria-label="Open settings"
+					title="Preferences & Settings"
+				>
+					<span class="material-symbols-rounded" aria-hidden="true">settings</span>
+				</button>
+			</div>
+		</div>
+	</header>
+
+	<main class="container">
+		{{ template "content" . }}
+	</main>
+
+	<footer class="footer">
+		<p>
+			Hypnoview indexes post metadata &amp; score velocity every 2h. Media loads directly from
+			<a href="https://hypnohub.net" target="_blank" rel="noopener noreferrer">hypnohub.net</a>.
+			<a href="/api/docs">REST API Docs</a> · <a href="/api/openapi.json">OpenAPI Spec</a>
+		</p>
+	</footer>
+
+	<!-- Settings Dialog -->
+	<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+		<div class="settings-dialog-content">
+			<header class="settings-dialog-header">
+				<h2 id="settings-title" class="settings-dialog-title">Settings &amp; Preferences</h2>
+				<button type="button" id="settings-close-btn" class="icon-btn settings-close-btn" aria-label="Close settings">
+					<span class="material-symbols-rounded" aria-hidden="true">close</span>
+				</button>
+			</header>
+
+			<div class="settings-dialog-body">
+				<!-- Section 1: Appearance & Layout -->
+				<section class="settings-section">
+					<h3 class="settings-section-title">Appearance &amp; Layout</h3>
+					
+					<div class="setting-group">
+						<label class="setting-label">Theme</label>
+						<div class="segmented-control" role="radiogroup" aria-label="Theme selection" id="setting-theme">
+							<button type="button" class="segmented-btn" data-value="system" role="radio" aria-checked="false">System</button>
+							<button type="button" class="segmented-btn" data-value="dark" role="radio" aria-checked="false">Dark</button>
+							<button type="button" class="segmented-btn" data-value="light" role="radio" aria-checked="false">Light</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Feed Layout</label>
+						<div class="segmented-control" role="radiogroup" aria-label="Feed layout selection" id="setting-view-mode">
+							<button type="button" class="segmented-btn" data-value="grid" role="radio" aria-checked="false">Grid</button>
+							<button type="button" class="segmented-btn" data-value="single" role="radio" aria-checked="false">Single Column</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<div class="setting-label-row">
+							<label for="setting-max-cols" class="setting-label">Max Columns</label>
+							<span id="setting-max-cols-val" class="setting-badge">5 cols</span>
+						</div>
+						<input type="range" id="setting-max-cols" min="1" max="8" step="1" value="5" class="setting-range" />
+					</div>
+
+					<div class="setting-group">
+						<div class="setting-label-row">
+							<label for="setting-min-width" class="setting-label">Min Column Width</label>
+							<span id="setting-min-width-val" class="setting-badge">210px</span>
+						</div>
+						<input type="range" id="setting-min-width" min="150" max="380" step="10" value="210" class="setting-range" />
+					</div>
+				</section>
+
+				<!-- Section 2: Feed Defaults -->
+				<section class="settings-section">
+					<h3 class="settings-section-title">Feed Defaults</h3>
+
+					<div class="setting-group">
+						<label class="setting-label">Default Popular Window</label>
+						<div class="segmented-control segmented-wrap" role="radiogroup" aria-label="Default popular window" id="setting-window-popular">
+							<button type="button" class="segmented-btn" data-value="6h" role="radio">6h</button>
+							<button type="button" class="segmented-btn" data-value="24h" role="radio">24h</button>
+							<button type="button" class="segmented-btn" data-value="3d" role="radio">3d</button>
+							<button type="button" class="segmented-btn" data-value="7d" role="radio">7d</button>
+							<button type="button" class="segmented-btn" data-value="30d" role="radio">30d</button>
+							<button type="button" class="segmented-btn" data-value="all" role="radio">All</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Default Browse Window</label>
+						<div class="segmented-control segmented-wrap" role="radiogroup" aria-label="Default browse window" id="setting-window-browse">
+							<button type="button" class="segmented-btn" data-value="all" role="radio">All</button>
+							<button type="button" class="segmented-btn" data-value="30d" role="radio">30d</button>
+							<button type="button" class="segmented-btn" data-value="7d" role="radio">7d</button>
+							<button type="button" class="segmented-btn" data-value="3d" role="radio">3d</button>
+							<button type="button" class="segmented-btn" data-value="24h" role="radio">24h</button>
+							<button type="button" class="segmented-btn" data-value="6h" role="radio">6h</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Default Rating</label>
+						<div class="segmented-control segmented-wrap" role="radiogroup" aria-label="Default rating" id="setting-default-rating">
+							<button type="button" class="segmented-btn" data-value="" role="radio">All</button>
+							<button type="button" class="segmented-btn" data-value="e" role="radio">Explicit</button>
+							<button type="button" class="segmented-btn" data-value="q" role="radio">Questionable</button>
+							<button type="button" class="segmented-btn" data-value="s" role="radio">Safe</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Default Lightbox Click Zoom</label>
+						<div class="segmented-control segmented-wrap" role="radiogroup" aria-label="Default lightbox zoom mode" id="setting-zoom-mode">
+							<button type="button" class="segmented-btn" data-value="fill-width" role="radio">Fill Width</button>
+							<button type="button" class="segmented-btn" data-value="original" role="radio">Original (1:1)</button>
+							<button type="button" class="segmented-btn" data-value="2x" role="radio">2x</button>
+							<button type="button" class="segmented-btn" data-value="3x" role="radio">3x</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-checkbox-label">
+							<input type="checkbox" id="setting-prefer-hd" class="setting-checkbox" />
+							<span>Prefer HD original in viewer</span>
+						</label>
+						<label class="setting-checkbox-label">
+							<input type="checkbox" id="setting-single-autoplay" class="setting-checkbox" />
+							<span>Autoplay videos &amp; GIFs in Single-Column view</span>
+						</label>
+					</div>
+				</section>
+
+				<!-- Section 3: Blocked Tags -->
+				<section class="settings-section">
+					<h3 class="settings-section-title">Blocked Tags</h3>
+					<p class="setting-desc">Posts containing any of these tags will be hidden from all feeds (unless you explicitly search for them).</p>
+
+					<div class="blocklist-input-wrap">
+						<input
+							type="text"
+							name="q"
+							id="blocklist-input"
+							placeholder="Add tag to blocklist…"
+							autocomplete="off"
+							autocapitalize="off"
+							spellcheck="false"
+							class="blocklist-input"
+							hx-get="/ui/tags/suggest?mode=single"
+							hx-params="q"
+							hx-trigger="input changed delay:120ms"
+							hx-target="#blocklist-suggestions"
+							hx-swap="innerHTML"
+							hx-sync="this:replace"
+						/>
+						<button type="button" id="blocklist-add-btn" class="page-btn blocklist-add-btn">Add</button>
+						<div id="blocklist-suggestions" class="tag-suggestions"></div>
+					</div>
+
+					<div id="blocklist-chips" class="blocklist-chips"></div>
+
+					<details class="settings-json-details">
+						<summary>Import / Export Settings JSON</summary>
+						<div class="settings-json-wrap">
+							<textarea id="settings-json-textarea" class="settings-json-textarea" rows="5" spellcheck="false"></textarea>
+							<button type="button" id="settings-json-apply-btn" class="page-btn">Apply JSON</button>
+						</div>
+					</details>
+				</section>
+			</div>
+
+			<footer class="settings-dialog-footer">
+				<button type="button" id="settings-reset-btn" class="page-btn settings-reset-btn">Reset Defaults</button>
+				<button type="button" id="settings-done-btn" class="page-btn page-btn-primary settings-done-btn">Done</button>
+			</footer>
+		</div>
+	</dialog>
+</body>
+</html>

@@ -1,0 +1,271 @@
+{{ define "content" }}
+<div class="index-layout">
+	<aside class="index-sidebar" id="index-sidebar">
+		<label for="mobile-filter-state" class="mobile-sidebar-backdrop" aria-hidden="true"></label>
+		<section class="controls-panel">
+			<div class="mobile-sidebar-header">
+				<span class="mobile-sidebar-title">Search &amp; Filters</span>
+				<label for="mobile-filter-state" id="mobile-filter-close" class="mobile-sidebar-close" role="button" tabindex="0" aria-label="Close filters">
+					<span class="material-symbols-rounded" aria-hidden="true">close</span>
+				</label>
+			</div>
+			<form class="search-form" method="get" action="{{ if .FormAction }}{{ .FormAction }}{{ else }}/{{ end }}">
+				<input type="hidden" name="window" value="{{ .Window }}" />
+				<input type="hidden" name="sort" value="{{ .Sort }}" />
+				{{ if .Rating }}<input type="hidden" name="rating" value="{{ .Rating }}" />{{ end }}
+				{{ if .Media }}<input type="hidden" name="media" value="{{ .Media }}" />{{ end }}
+
+				<div class="search-input-wrap">
+					<input
+						type="search"
+						name="tags"
+						id="tag-search-input"
+						value="{{ .TagsQuery }}"
+						placeholder="Filter tags (e.g. hypnosis -furry animated)…"
+						autocomplete="off"
+						autocapitalize="off"
+						spellcheck="false"
+						hx-get="/ui/tags/suggest"
+						hx-params="tags"
+						hx-trigger="input changed delay:120ms"
+						hx-target="#tag-suggestions"
+						hx-swap="innerHTML"
+						hx-sync="this:replace"
+					/>
+					{{ if .TagsQuery }}
+					<a href="{{ .ClearTagsURL }}" class="clear-btn" title="Clear tags">✕</a>
+					{{ end }}
+					<button type="submit" class="search-btn">Filter</button>
+				</div>
+				<div id="tag-suggestions" class="tag-suggestions"></div>
+			</form>
+
+			<div class="filter-rows">
+				<div class="pill-group" role="group" aria-label="Sliding time window">
+					<span class="group-label">Window</span>
+					{{ range .Windows }}
+					<a href="{{ .URL }}" class="pill {{ if .Active }}active{{ end }}" {{ if .Active }}aria-current="page"{{ end }}>{{ .Label }}</a>
+					{{ end }}
+				</div>
+
+				<div class="pill-group" role="group" aria-label="Ranking mode">
+					<span class="group-label">Rank</span>
+					{{ range .Sorts }}
+					<a href="{{ .URL }}" class="pill {{ if .Active }}active{{ end }}" {{ if .Active }}aria-current="page"{{ end }} title="{{ .Desc }}">{{ .Label }}</a>
+					{{ end }}
+				</div>
+
+				<div class="pill-group" role="group" aria-label="Media filters">
+					<span class="group-label">Media</span>
+					{{ range .MediaTypes }}
+					<a href="{{ .URL }}" class="pill {{ if .Active }}active{{ end }}" {{ if .Active }}aria-current="page"{{ end }}>{{ .Label }}</a>
+					{{ end }}
+				</div>
+
+				<div class="pill-group" role="group" aria-label="Rating filters">
+					<span class="group-label">Rating</span>
+					{{ range .Ratings }}
+					<a href="{{ .URL }}" class="pill {{ if .Active }}active{{ end }}" {{ if .Active }}aria-current="page"{{ end }}>{{ .Label }}</a>
+					{{ end }}
+				</div>
+			</div>
+
+			{{ if .PopularTags }}
+			<details class="quick-tags">
+				<summary>Popular indexed tags ({{ formatInt .Stats.TotalTags }} total)</summary>
+				<div class="tag-cloud">
+					{{ range .PopularTags }}
+					<a href="{{ $.ToggleTagURL .Name }}" class="tag-chip{{ if $.IsTagActive .Name }} active{{ end }}" data-tag="{{ .Name }}">
+						<span>{{ .Name }}</span>
+						<small>{{ .PostCount }}</small>
+					</a>
+					{{ end }}
+				</div>
+			</details>
+			{{ end }}
+		</section>
+	</aside>
+
+	<div class="index-main">
+		<section class="results-header">
+			<div class="results-summary">
+				Showing <strong>{{ len .Posts }}</strong> of <strong>{{ formatInt .Total }}</strong> posts
+				{{ if .ActiveTags }}
+				matching
+				{{ range .ActiveTags }}
+				<a href="{{ $.RemoveTagURL . }}" class="active-tag" data-remove-tag="{{ . }}" title="Remove tag {{ . }}">
+					<span>{{ . }}</span> <span aria-hidden="true">×</span>
+				</a>
+				{{ end }}
+				{{ end }}
+				{{ if .BlockedTagsCount }}
+				<button type="button" class="blocked-tags-indicator" id="blocked-tags-btn" title="{{ .BlockedTagsCount }} blocked tags applied from settings">
+					<span class="material-symbols-rounded" aria-hidden="true">block</span>
+					<span>{{ .BlockedTagsCount }} blocked</span>
+				</button>
+				{{ end }}
+			</div>
+			{{ if gt .TotalPages 1 }}
+			<div class="pagination-mini">
+				{{ if .HasPrev }}<a href="{{ .PrevURL }}" class="page-btn">← Prev</a>{{ end }}
+				<span class="page-indicator">Page {{ .Page }} / {{ .TotalPages }}</span>
+				{{ if .HasNext }}<a href="{{ .NextURL }}" class="page-btn">Next →</a>{{ end }}
+			</div>
+			{{ end }}
+		</section>
+
+		{{ if not .Posts }}
+		<div class="empty-state">
+			<h2>No posts matched this filter</h2>
+			<p>Try widening the time window (e.g. Week or Month) or removing tag filters.</p>
+			<a href="/?window=30d&sort=hot" class="pill active">View 30-Day Hot Posts</a>
+		</div>
+		{{ else }}
+		<div class="post-grid" id="post-grid">
+			{{ range $idx, $p := .Posts }}
+			<article
+				class="post-card"
+				data-index="{{ $idx }}"
+				data-id="{{ $p.ID }}"
+				data-score="{{ $p.Score }}"
+				data-delta="{{ $p.ScoreDelta }}"
+				data-rate="{{ rateLabel $p.ScoreRate }}"
+				data-hot="{{ hotCount $p.HotScore }}"
+				data-rating="{{ $p.Rating.Label }}"
+				data-created="{{ timeAgo $p.CreatedAt }}"
+				data-ext="{{ $p.FileExt }}"
+				data-width="{{ $p.Width }}"
+				data-height="{{ $p.Height }}"
+				data-file-url="{{ $p.FileURL }}"
+				data-sample-url="{{ thumbURL $p }}"
+				data-preview-url="{{ $p.PreviewURL }}"
+				data-source="{{ $p.Source }}"
+				data-tags="{{ join $p.Tags " " }}"
+			>
+				<a href="/posts/{{ $p.ID }}" class="card-media-link" style="--post-aspect: {{ aspectRatio $p.Width $p.Height }};">
+					<img
+						src="{{ thumbURL $p }}"
+						alt="Post #{{ $p.ID }}"
+						width="{{ thumbWidth $p }}"
+						height="{{ thumbHeight $p }}"
+						loading="lazy"
+						decoding="async"
+						referrerpolicy="no-referrer"
+					/>
+					{{ if isVideoExt $p.FileExt }}
+					<div class="card-badges-top">
+						<span class="badge badge-media badge-icon" title="{{ upper $p.FileExt }} Video" aria-label="{{ upper $p.FileExt }} Video">
+							<span class="material-symbols-rounded" aria-hidden="true">videocam</span>
+						</span>
+					</div>
+					{{ else if eq (lower $p.FileExt) "gif" }}
+					<div class="card-badges-top">
+						<span class="badge badge-media badge-icon" title="Animated GIF" aria-label="Animated GIF">
+							<span class="material-symbols-rounded" aria-hidden="true">motion_photos_on</span>
+						</span>
+					</div>
+					{{ else if isAnimatedExt $p.FileExt }}
+					<div class="card-badges-top">
+						<span class="badge badge-media badge-icon" title="{{ upper $p.FileExt }}">
+							<span class="material-symbols-rounded" aria-hidden="true">motion_photos_on</span>
+						</span>
+					</div>
+					{{ end }}
+				</a>
+				<div class="card-footer">
+					<a href="/posts/{{ $p.ID }}" class="card-id">#{{ $p.ID }}</a>
+					<div class="card-meta-group">
+						<span class="card-metric" title="Score: {{ $p.Score }}">★ {{ $p.Score }}</span>
+						{{ if eq $.ActiveNav "popular" }}
+						<span class="card-metric card-velocity" title="Popularity Score: {{ hotCount $p.HotScore }}">
+							<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
+							<span>{{ hotCount $p.HotScore }}</span>
+						</span>
+						{{ end }}
+						<span class="card-age" title="{{ $p.CreatedAt }}">{{ timeAgo $p.CreatedAt }}</span>
+					</div>
+				</div>
+				<div class="card-tags-row">
+					{{ range $i, $t := $p.Tags }}
+					{{ if lt $i 8 }}
+					<a href="{{ $.ToggleTagURL $t }}" class="tag-chip card-tag-chip" data-tag="{{ $t }}">{{ $t }}</a>
+					{{ end }}
+					{{ end }}
+				</div>
+			</article>
+			{{ end }}
+		</div>
+
+		{{ if and (eq .Page .TotalPages) (gt (len .Posts) 0) .HypnohubContinuationURL }}
+		<aside class="last-page-notice" aria-label="End of local index">
+			<p class="last-page-text">
+				Older posts beyond the rolling {{ formatInt .Stats.TotalPosts }}-post index are not tracked locally and can be browsed directly on Hypnohub.
+			</p>
+			<div class="last-page-actions">
+				{{ if ne .Window "all" }}
+				<a href="{{ .AllWindowURL }}" class="page-btn page-btn-lg">
+					View All {{ formatInt .Stats.TotalPosts }} Indexed Posts
+				</a>
+				{{ end }}
+				<a href="{{ .HypnohubContinuationURL }}" target="_blank" rel="noopener noreferrer" class="page-btn page-btn-lg continuation-btn">
+					Continue on Hypnohub (Post #{{ .LastPostID }}) ↗
+				</a>
+			</div>
+		</aside>
+		{{ end }}
+
+		{{ if gt .TotalPages 1 }}
+		<nav class="pagination" aria-label="Pagination">
+			{{ if .HasPrev }}
+			<a href="{{ .PrevURL }}" class="page-btn page-btn-lg">← Previous</a>
+			{{ else }}
+			<span class="page-btn page-btn-lg disabled">← Previous</span>
+			{{ end }}
+
+			<span class="page-indicator">Page {{ .Page }} of {{ .TotalPages }}</span>
+
+			{{ if .HasNext }}
+			<a href="{{ .NextURL }}" class="page-btn page-btn-lg">Next →</a>
+			{{ else }}
+			<span class="page-btn page-btn-lg disabled">Next →</span>
+			{{ end }}
+		</nav>
+		{{ end }}
+		{{ end }}
+	</div>
+</div>
+
+<!-- Mobile & Desktop Interactive Lightbox Viewer -->
+<dialog id="lightbox" class="lightbox">
+	<div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+	<div class="lightbox-content">
+		<header class="lightbox-header">
+			<div class="lightbox-title">
+				<a id="lb-post-link" href="#" class="lb-id">#0</a>
+				<span id="lb-score" class="badge">★ 0</span>
+				<span id="lb-rate" class="badge" title="Popularity score" style="display: none;">
+					<span class="material-symbols-rounded" aria-hidden="true">whatshot</span>
+					<span id="lb-hot-val">0</span>
+				</span>
+				<span id="lb-age" class="lb-meta"></span>
+			</div>
+			<div class="lightbox-actions">
+				<button type="button" id="lb-zoom-toggle" class="lb-btn" title="Toggle Zoom (or click on image)">Fit</button>
+				<button type="button" id="lb-hd-toggle" class="lb-btn" title="Toggle original HD resolution">Sample</button>
+				<a id="lb-hypnohub-link" href="#" target="_blank" rel="noopener noreferrer" class="lb-btn">Source ↗</a>
+				<button type="button" id="lb-close" class="lb-btn lb-close" aria-label="Close">✕</button>
+			</div>
+		</header>
+
+		<div class="lightbox-stage" id="lightbox-stage">
+			<button type="button" id="lb-prev" class="lb-nav lb-prev" aria-label="Previous post">‹</button>
+			<div id="lb-media-wrap" class="lb-media-wrap"></div>
+			<button type="button" id="lb-next" class="lb-nav lb-next" aria-label="Next post">›</button>
+		</div>
+
+		<footer class="lightbox-footer">
+			<div id="lb-tags" class="lb-tags"></div>
+		</footer>
+	</div>
+</dialog>
+{{ end }}

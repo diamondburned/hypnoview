@@ -3,7 +3,7 @@ package query
 import (
 	"testing"
 
-	"libdb.so/hypnoview/lib/hypnohub"
+	"libdb.so/hypnoview"
 )
 
 func TestQuery(t *testing.T) {
