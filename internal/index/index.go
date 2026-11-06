@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/internal/index/sqlcgen"
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index/sqlcgen"
 	"libdb.so/lazymigrate"
 	_ "modernc.org/sqlite"
 )

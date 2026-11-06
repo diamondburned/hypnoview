@@ -17,7 +17,7 @@ generate:
 test:
 	go test -v ./... -skip=Example
 
-# build hypnoview package with nix
+# build hypnogaze package with nix
 build:
 	nix build .#default
 
@@ -28,8 +28,8 @@ check:
 # run the server in dev mode (serves templates & static files from disk if --dev is set)
 [private]
 run-dev:
-	go run ./cmd/hypnoview --listen-addr 127.0.0.1:18080 --db hypnoview.db --no-poller --dev
+	go run ./cmd/hypnogaze --listen-addr 127.0.0.1:18080 --db hypnogaze.db --no-poller --dev
 
 # seed the local database with the most recent 10,000 posts
 seed:
-	go run ./cmd/hypnoview --seed-only --min-posts 10000 --db hypnoview.db
+	go run ./cmd/hypnogaze --seed-only --min-posts 10000 --db hypnogaze.db

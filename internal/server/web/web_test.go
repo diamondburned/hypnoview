@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/internal/index"
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index"
 )
 
 func TestWebFeeds(t *testing.T) {
@@ -402,10 +402,10 @@ func TestRobotsTxtAndOpenGraph(t *testing.T) {
 	if !strings.Contains(body, `<meta name="robots" content="index, follow" />`) {
 		t.Errorf("expected index, follow meta on root, got: %s", body)
 	}
-	if !strings.Contains(body, `property="og:site_name" content="hypnoview"`) {
+	if !strings.Contains(body, `property="og:site_name" content="hypnogaze"`) {
 		t.Errorf("expected og:site_name on root, got: %s", body)
 	}
-	if !strings.Contains(body, `property="og:title" content="Hypnoview — Browse"`) {
+	if !strings.Contains(body, `property="og:title" content="Hypnogaze — Browse"`) {
 		t.Errorf("expected og:title on root, got: %s", body)
 	}
 
@@ -426,7 +426,7 @@ func TestRobotsTxtAndOpenGraph(t *testing.T) {
 	if !strings.Contains(body, `<meta name="robots" content="index, follow" />`) {
 		t.Errorf("expected index, follow on post detail, got: %s", body)
 	}
-	if !strings.Contains(body, `property="og:title" content="Post #1 (★ 42) — hypnoview"`) {
+	if !strings.Contains(body, `property="og:title" content="Post #1 (★ 42) — hypnogaze"`) {
 		t.Errorf("expected og:title on post detail, got: %s", body)
 	}
 	if !strings.Contains(body, `name="twitter:card" content="summary_large_image"`) {

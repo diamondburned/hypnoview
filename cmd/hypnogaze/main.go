@@ -14,11 +14,11 @@ import (
 	"github.com/lmittmann/tint"
 	"github.com/spf13/pflag"
 	"libdb.so/hserve"
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/httputil"
-	"libdb.so/hypnoview/internal/index"
-	"libdb.so/hypnoview/internal/server/api"
-	"libdb.so/hypnoview/internal/server/web"
+	"gaze.d14.pet"
+	"gaze.d14.pet/httputil"
+	"gaze.d14.pet/internal/index"
+	"gaze.d14.pet/internal/server/api"
+	"gaze.d14.pet/internal/server/web"
 )
 
 type options struct {
@@ -35,7 +35,7 @@ type options struct {
 func main() {
 	opts := options{
 		listenAddr:   ":8080",
-		dbPath:       "hypnoview.db",
+		dbPath:       "hypnogaze.db",
 		pollInterval: index.DefaultPollInterval,
 		minPosts:     index.DefaultSeedPosts,
 	}
@@ -142,7 +142,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("starting hypnoview server",
+	logger.Info("starting hypnogaze server",
 		"addr", opts.listenAddr,
 		"db", opts.dbPath,
 		"poll_interval", opts.pollInterval)

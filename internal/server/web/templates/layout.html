@@ -12,7 +12,7 @@
 	<title>{{ .Title }}</title>
 
 	{{- if .OpenGraph.Title }}
-	<meta property="og:site_name" content="hypnoview" />
+	<meta property="og:site_name" content="hypnogaze" />
 	<meta property="og:title" content="{{ .OpenGraph.Title }}" />
 	<meta property="og:description" content="{{ .OpenGraph.Description }}" />
 	<meta property="og:type" content="{{ .OpenGraph.Type }}" />
@@ -45,7 +45,7 @@
 	document.documentElement.classList.add("js");
 	(function () {
 		try {
-			var raw = localStorage.getItem("hypnoview.settings");
+			var raw = localStorage.getItem("hypnogaze.settings") || localStorage.getItem("hypnoview.settings");
 			if (!raw) return;
 			var s = JSON.parse(raw);
 			var el = document.documentElement;
@@ -83,10 +83,10 @@
 		<div class="topbar-inner">
 			<div class="topbar-left">
 				<a href="/" class="brand">
-					<span class="brand-icon-bubble" aria-label="Hypnoview icon">
+					<span class="brand-icon-bubble" aria-label="Hypnogaze icon">
 						<img src="/static/spiral.svg" class="brand-spiral-svg" alt="" width="20" height="20" aria-hidden="true" />
 					</span>
-					<span class="brand-text">hypnoview</span>
+					<span class="brand-text">hypnogaze</span>
 				</a>
 				<nav class="topbar-nav" aria-label="Main navigation">
 					<a href="/" class="nav-btn {{ if eq .ActiveNav "browse" }}active{{ end }}" {{ if eq .ActiveNav "browse" }}aria-current="page"{{ end }}>Browse</a>
@@ -135,7 +135,7 @@
 
 	<footer class="footer">
 		<p>
-			Hypnoview indexes post metadata &amp; score velocity every 2h. Media loads directly from
+			Hypnogaze indexes post metadata &amp; score velocity every 2h. Media loads directly from
 			<a href="https://hypnohub.net" target="_blank" rel="noopener noreferrer">hypnohub.net</a>.
 			<a href="/api/docs">REST API Docs</a> · <a href="/api/openapi.json">OpenAPI Spec</a>
 		</p>

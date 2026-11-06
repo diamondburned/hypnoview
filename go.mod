@@ -1,4 +1,4 @@
-module libdb.so/hypnoview
+module gaze.d14.pet
 
 go 1.26.0
 

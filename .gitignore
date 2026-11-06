@@ -3,5 +3,6 @@
 *.db-shm
 *.db-wal
 /hypnoview
+/hypnogaze
 result
 result-*

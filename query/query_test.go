@@ -3,7 +3,7 @@ package query
 import (
 	"testing"
 
-	"libdb.so/hypnoview"
+	"gaze.d14.pet"
 )
 
 func TestQuery(t *testing.T) {

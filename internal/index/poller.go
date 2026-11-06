@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"libdb.so/hypnoview"
+	"gaze.d14.pet"
 )
 
 const (

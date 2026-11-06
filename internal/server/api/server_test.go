@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/internal/index"
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index"
 )
 
 func TestRESTAPIEndpoints(t *testing.T) {

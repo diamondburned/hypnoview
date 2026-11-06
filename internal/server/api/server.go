@@ -1,4 +1,4 @@
-// Package api implements the Hypnoview JSON REST API using Huma v2.
+// Package api implements the Hypnogaze JSON REST API using Huma v2.
 // All endpoints query the local SQLite index exclusively and never contact upstream Hypnohub.
 package api
 
@@ -11,11 +11,11 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/go-chi/chi/v5"
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/internal/index"
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index"
 )
 
-// Server provides the REST API for Hypnoview.
+// Server provides the REST API for Hypnogaze.
 type Server struct {
 	store *index.Store
 	mux   *http.ServeMux
@@ -61,7 +61,7 @@ func NewServer(store *index.Store) *Server {
 		mux:   http.NewServeMux(),
 	}
 
-	config := huma.DefaultConfig("Hypnoview API", "2.0.0")
+	config := huma.DefaultConfig("Hypnogaze API", "2.0.0")
 	config.Info.Description = "Local-index REST API for browsing Hypnohub posts and rolling popularity rankings."
 	config.OpenAPIPath = "/api/openapi"
 	config.DocsPath = "/api/docs"

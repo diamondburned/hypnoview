@@ -1,4 +1,4 @@
-// Progressive enhancement for Hypnoview mobile-friendly feed:
+// Progressive enhancement for Hypnogaze mobile-friendly feed:
 // 1. Tag search autocomplete with keyboard navigation & AbortController
 // 2. Tag chip toggle (add/remove) & active tag badges
 // 3. Interactive media lightbox with 0ms progressive thumbnail preview and background scroll locking
@@ -74,7 +74,7 @@ const DEFAULT_SETTINGS = {
 
 function loadSettings() {
 	try {
-		const raw = localStorage.getItem("hypnoview.settings");
+		const raw = localStorage.getItem("hypnogaze.settings") || localStorage.getItem("hypnoview.settings");
 		if (!raw) return { ...DEFAULT_SETTINGS };
 		const parsed = JSON.parse(raw);
 		return {
@@ -201,6 +201,7 @@ function applyVisualSettings(s) {
 
 function saveSettings(s) {
 	currentSettings = s;
+	localStorage.setItem("hypnogaze.settings", JSON.stringify(s));
 	localStorage.setItem("hypnoview.settings", JSON.stringify(s));
 	syncCookie(s);
 	applyVisualSettings(s);

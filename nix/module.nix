@@ -6,20 +6,23 @@ self:
   ...
 }:
 let
-  cfg = config.services.hypnoview;
+  cfgGaze = config.services.hypnogaze;
+  cfgView = config.services.hypnoview;
+  cfg = if cfgGaze.enable then cfgGaze else cfgView;
+  isGaze = cfgGaze.enable || !cfgView.enable;
+
   system = pkgs.stdenv.hostPlatform.system;
   selfPackages = if self == null then { } else self.packages or { };
   systemPackages = selfPackages.${system} or { };
-in
-{
-  options.services.hypnoview = {
-    enable = lib.mkEnableOption "hypnoview rolling popularity index and web UI";
+
+  mkOptions = serviceName: defaultDb: {
+    enable = lib.mkEnableOption "${serviceName} rolling popularity index and web UI";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = systemPackages.hypnoview or pkgs.hypnoview;
+      default = systemPackages.hypnogaze or systemPackages.hypnoview or pkgs.hypnogaze or pkgs.hypnoview;
       defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.default";
-      description = "The hypnoview package to run.";
+      description = "The ${serviceName} package to run.";
     };
 
     listenAddr = lib.mkOption {
@@ -30,7 +33,7 @@ in
 
     databasePath = lib.mkOption {
       type = lib.types.path;
-      default = "/var/lib/hypnoview/hypnoview.db";
+      default = defaultDb;
       description = "Path to the SQLite database file.";
     };
 
@@ -55,13 +58,17 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Extra command-line arguments passed to hypnoview.";
+      description = "Extra command-line arguments passed to ${serviceName}.";
     };
   };
+in
+{
+  options.services.hypnogaze = mkOptions "hypnogaze" "/var/lib/hypnogaze/hypnogaze.db";
+  options.services.hypnoview = mkOptions "hypnoview" "/var/lib/hypnoview/hypnoview.db";
 
-  config = lib.mkIf cfg.enable {
-    systemd.services.hypnoview = {
-      description = "hypnoview rolling popularity index and web UI";
+  config = lib.mkIf (cfgGaze.enable || cfgView.enable) {
+    systemd.services.${if isGaze then "hypnogaze" else "hypnoview"} = {
+      description = "${if isGaze then "hypnogaze" else "hypnoview"} rolling popularity index and web UI";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -84,8 +91,8 @@ in
         );
 
         DynamicUser = true;
-        StateDirectory = "hypnoview";
-        WorkingDirectory = "/var/lib/hypnoview";
+        StateDirectory = if isGaze then "hypnogaze" else "hypnoview";
+        WorkingDirectory = if isGaze then "/var/lib/hypnogaze" else "/var/lib/hypnoview";
         Restart = "on-failure";
         RestartSec = "5s";
 
@@ -95,7 +102,7 @@ in
         ProtectSystem = "strict";
         ProtectHome = true;
         ReadWritePaths = lib.optional (
-          !lib.hasPrefix "/var/lib/hypnoview" (toString cfg.databasePath)
+          !lib.hasPrefix (if isGaze then "/var/lib/hypnogaze" else "/var/lib/hypnoview") (toString cfg.databasePath)
         ) (builtins.dirOf (toString cfg.databasePath));
       };
     };

@@ -1,4 +1,4 @@
-// Package web provides the server-rendered HTML web UI for Hypnoview.
+// Package web provides the server-rendered HTML web UI for Hypnogaze.
 package web
 
 import (
@@ -24,9 +24,9 @@ import (
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
-	"libdb.so/hypnoview"
-	"libdb.so/hypnoview/internal/index"
-	"libdb.so/hypnoview/internal/server/api"
+	"gaze.d14.pet"
+	"gaze.d14.pet/internal/index"
+	"gaze.d14.pet/internal/server/api"
 )
 
 func init() {
@@ -578,7 +578,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 				defaultSort = sNorm
 			}
 		}
-		pageTitle = "Hypnoview — Popular & Trending"
+		pageTitle = "Hypnogaze — Popular & Trending"
 	} else {
 		defaultWindow = index.WindowAllTime
 		if prefs.WindowBrowse != "" {
@@ -593,7 +593,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 				defaultSort = sNorm
 			}
 		}
-		pageTitle = "Hypnoview — Browse"
+		pageTitle = "Hypnogaze — Browse"
 	}
 
 	var window string
@@ -907,7 +907,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	ogDesc := fmt.Sprintf("★ %d · %d×%d %s · Tags: %s", post.Score, post.Width, post.Height, strings.ToUpper(post.FileExt), strings.Join(tagsList, ", "))
 
 	postOG := OpenGraph{
-		Title:       fmt.Sprintf("Post #%d (★ %d) — hypnoview", post.ID, post.Score),
+		Title:       fmt.Sprintf("Post #%d (★ %d) — hypnogaze", post.ID, post.Score),
 		Description: ogDesc,
 		Type:        ogType,
 		URL:         fmt.Sprintf("/posts/%d", post.ID),
@@ -926,7 +926,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := postPageData{
-		Title:      fmt.Sprintf("Post #%d — Hypnoview", post.ID),
+		Title:      fmt.Sprintf("Post #%d — Hypnogaze", post.ID),
 		Post:       *post,
 		Snapshots:  snapshots,
 		Stats:      *stats,

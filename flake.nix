@@ -1,5 +1,5 @@
 {
-  description = "hypnoview rolling popularity index and web UI";
+  description = "hypnogaze rolling popularity index and web UI";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -10,6 +10,7 @@
     inputs@{ self, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       flake.nixosModules.default = import ./nix/module.nix self;
+      flake.nixosModules.hypnogaze = self.nixosModules.default;
       flake.nixosModules.hypnoview = self.nixosModules.default;
 
       systems = [
@@ -27,14 +28,14 @@
         }:
         {
           packages = rec {
-            default = hypnoview;
-            hypnoview = pkgs.buildGoModule {
-              pname = "hypnoview";
+            default = hypnogaze;
+            hypnogaze = pkgs.buildGoModule {
+              pname = "hypnogaze";
               version = self.shortRev or self.dirtyShortRev or "2.0.0";
 
               src = lib.cleanSource ./.;
 
-              subPackages = [ "cmd/hypnoview" ];
+              subPackages = [ "cmd/hypnogaze" ];
 
               vendorHash = "sha256-KmsFIXKRl39YvWy3/5xnNHWYhAN6apN7dw+h9/LTnRM=";
 
@@ -42,11 +43,12 @@
 
               meta = {
                 description = "Rolling popularity index and modern web UI for Hypnohub";
-                homepage = "https://libdb.so/hypnoview";
+                homepage = "https://gaze.d14.pet";
                 license = lib.licenses.agpl3Only;
-                mainProgram = "hypnoview";
+                mainProgram = "hypnogaze";
               };
             };
+            hypnoview = hypnogaze;
           };
 
           devShells.default = pkgs.mkShell {

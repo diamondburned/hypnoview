@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"libdb.so/hypnoview"
+	"gaze.d14.pet"
 )
 
 // Query represents a search query for the Hypnohub API.
