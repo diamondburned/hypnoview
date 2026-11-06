@@ -2186,7 +2186,7 @@ func TestTagResolutionOverwriteProtection(t *testing.T) {
 			ID:        9001,
 			Score:     10,
 			Rating:    hypnohub.RatingExplicit,
-			Tags:      "famous_artist new_tag",
+			Tags:      "famous_artist new_tag ghost_tag",
 			Status:    "active",
 			CreatedAt: hypnohub.Date(now),
 		},
@@ -2195,15 +2195,17 @@ func TestTagResolutionOverwriteProtection(t *testing.T) {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
-	// Mark famous_artist as Artist (1), while new_tag remains Unknown (-1).
+	// Mark famous_artist as Artist (1), while new_tag and ghost_tag remain Unknown (-1).
 	if err := store.persistTagCategories(ctx, map[string]hypnohub.TagType{
 		"famous_artist": hypnohub.TagTypeArtist,
 	}); err != nil {
 		t.Fatalf("persistTagCategories failed: %v", err)
 	}
 
-	// Upstream scrape returns only new_tag (Character) and omits famous_artist.
+	var upstreamHits atomic.Int32
+	// Upstream scrape returns only new_tag (Character), omits famous_artist, and ghost_tag is absent from both sidebar and DAPI.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
 		q := r.URL.Query()
 		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "9001" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2226,7 +2228,7 @@ func TestTagResolutionOverwriteProtection(t *testing.T) {
 		t.Fatalf("GetPost(9001) failed: %v", err)
 	}
 
-	var artistCat, newTagCat int
+	var artistCat, newTagCat, ghostCat int
 	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'famous_artist'").Scan(&artistCat); err != nil {
 		t.Fatalf("querying famous_artist category: %v", err)
 	}
@@ -2239,8 +2241,23 @@ func TestTagResolutionOverwriteProtection(t *testing.T) {
 	if newTagCat != int(hypnohub.TagTypeCharacter) {
 		t.Errorf("new_tag category = %d, want %d (TagTypeCharacter)", newTagCat, hypnohub.TagTypeCharacter)
 	}
-	if len(p.TagGroups) != 2 || p.TagGroups[0].Slug != "character" || p.TagGroups[1].Slug != "artist" {
-		t.Errorf("expected Character and Artist groups on post, got %+v", p.TagGroups)
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'ghost_tag'").Scan(&ghostCat); err != nil {
+		t.Fatalf("querying ghost_tag category: %v", err)
+	}
+	if ghostCat != int(hypnohub.TagTypeGeneral) {
+		t.Errorf("ghost_tag category = %d, want %d (TagTypeGeneral)", ghostCat, hypnohub.TagTypeGeneral)
+	}
+	if len(p.TagGroups) != 3 || p.TagGroups[0].Slug != "character" || p.TagGroups[1].Slug != "artist" || p.TagGroups[2].Slug != "general" {
+		t.Errorf("expected Character, Artist, and General groups on post, got %+v", p.TagGroups)
+	}
+
+	// Second view of 9001 must make 0 upstream requests because ghost_tag is now General (0).
+	upstreamHits.Store(0)
+	if _, _, err := store.GetPost(ctx, 9001); err != nil {
+		t.Fatalf("second GetPost(9001) failed: %v", err)
+	}
+	if hits := upstreamHits.Load(); hits != 0 {
+		t.Errorf("expected 0 upstream requests on second GetPost(9001), got %d", hits)
 	}
 }
 
@@ -2353,18 +2370,34 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	defer store.Close()
 
 	now := time.Now().UTC()
-	// Seed bad_tag on 2 posts (post_count=2) and good_tag on 1 post (post_count=1)
+	// Seed bad_tag on 2 posts (post_count=2) and good_tag + absent_tag on 1 post (post_count=1)
 	// so bad_tag is ordered first by post_count DESC.
 	posts := []hypnohub.Post{
-		{ID: 1, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag good_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
+		{ID: 1, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag good_tag absent_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
 		{ID: 2, Score: 5, Rating: hypnohub.RatingSafe, Tags: "bad_tag", Status: "active", CreatedAt: hypnohub.Date(now)},
 	}
 	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
 		t.Fatalf("IngestBatch failed: %v", err)
 	}
 
+	var seenBulkPIDs []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		if q.Get("orderby") == "count" {
+			seenBulkPIDs = append(seenBulkPIDs, q.Get("pid"))
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			if q.Get("pid") == "0" {
+				// Return tags NOT in unknownSet on page 0 so updates is not polluted by unrelated tags.
+				_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array">
+					<tag type="3" count="999" name="unrelated_tag_1" ambiguous="false" id="1"/>
+					<tag type="4" count="888" name="unrelated_tag_2" ambiguous="false" id="2"/>
+				</tags>`))
+				return
+			}
+			// Page 1 returns empty -> resets tagSweepPage to 0.
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"></tags>`))
+			return
+		}
 		if q.Get("name") == "bad_tag" {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -2383,25 +2416,43 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	client.BaseURL = ts.URL
 	store.SetClient(client)
 
-	resolved, err := store.ResolveUnknownTagCategories(ctx, 10)
+	resolved, err := store.ResolveUnknownTagCategories(ctx, 2)
 	if err != nil {
 		t.Fatalf("ResolveUnknownTagCategories failed: %v", err)
 	}
-	if resolved != 1 {
-		t.Errorf("expected 1 resolved tag, got %d", resolved)
+	if resolved != 2 {
+		t.Errorf("expected 2 resolved tags (good_tag + absent_tag), got %d", resolved)
+	}
+	if store.tagSweepPage.Load() != 1 {
+		t.Errorf("expected tagSweepPage = 1 after first call, got %d", store.tagSweepPage.Load())
 	}
 
-	var goodCat, badCat int
+	var goodCat, absentCat, badCat int
 	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'good_tag'").Scan(&goodCat); err != nil {
 		t.Fatalf("querying good_tag category: %v", err)
 	}
 	if goodCat != int(hypnohub.TagTypeArtist) {
 		t.Errorf("good_tag category = %d, want %d (TagTypeArtist)", goodCat, hypnohub.TagTypeArtist)
 	}
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'absent_tag'").Scan(&absentCat); err != nil {
+		t.Fatalf("querying absent_tag category: %v", err)
+	}
+	if absentCat != int(hypnohub.TagTypeGeneral) {
+		t.Errorf("absent_tag category = %d, want %d (TagTypeGeneral)", absentCat, hypnohub.TagTypeGeneral)
+	}
 	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'bad_tag'").Scan(&badCat); err != nil {
 		t.Fatalf("querying bad_tag category: %v", err)
 	}
 	if badCat != int(hypnohub.TagTypeUnknown) {
 		t.Errorf("bad_tag category = %d, want %d (TagTypeUnknown)", badCat, hypnohub.TagTypeUnknown)
+	}
+
+	// Second call fetches page 1 (which returns empty) and resets tagSweepPage to 0.
+	_, _ = store.ResolveUnknownTagCategories(ctx, 2)
+	if len(seenBulkPIDs) != 2 || seenBulkPIDs[0] != "0" || seenBulkPIDs[1] != "1" {
+		t.Errorf("expected bulk PIDs [0, 1], got %v", seenBulkPIDs)
+	}
+	if store.tagSweepPage.Load() != 0 {
+		t.Errorf("expected tagSweepPage reset to 0 after empty bulk page, got %d", store.tagSweepPage.Load())
 	}
 }

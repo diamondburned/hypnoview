@@ -176,7 +176,7 @@ type Store struct {
 	scrapeRetryAt atomic.Int64
 	scrapeMu      sync.Mutex
 	scrapeFlight  map[hypnohub.PostID]*inFlightScrape
-	bulkTagPage   atomic.Int64
+	tagSweepPage  atomic.Int64
 }
 
 // SetClient attaches an optional Hypnohub client for on-demand and background tag category resolution.
@@ -1377,11 +1377,12 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 				s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
 				break
 			}
+			norm := hypnohub.TagTypeGeneral
 			if tagInfo != nil {
-				norm := tagInfo.Type.Normalize()
-				updates[name] = norm
-				tagRows[i].Category = int64(norm)
+				norm = tagInfo.Type.Normalize()
 			}
+			updates[name] = norm
+			tagRows[i].Category = int64(norm)
 		}
 	}
 
@@ -1419,7 +1420,7 @@ func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hyp
 }
 
 // ResolveUnknownTagCategories resolves up to limit tags whose category is still TagTypeUnknown (-1)
-// using the configured Hypnohub client and commits positively resolved updates in a single transaction.
+// using the configured Hypnohub client and commits resolved updates in a single transaction.
 func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int, error) {
 	if s.client == nil {
 		return 0, nil
@@ -1427,7 +1428,7 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 	if limit <= 0 {
 		limit = 20
 	}
-	names, err := s.q.ListUnknownCategoryTags(ctx, int64(limit))
+	names, err := s.q.ListUnknownCategoryTags(ctx, int64(max(limit*5, 200)))
 	if err != nil {
 		return 0, fmt.Errorf("listing unknown category tags: %w", err)
 	}
@@ -1435,18 +1436,25 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		return 0, nil
 	}
 
+	unknownSet := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		unknownSet[name] = struct{}{}
+	}
+
 	rCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	updates := make(map[string]hypnohub.TagType, len(names))
 
-	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve many tags in 1 request.
-	page := int(s.bulkTagPage.Load())
-	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr == nil && len(bulkTags) > 0 {
-		s.bulkTagPage.Store(int64((page + 1) % 50))
+	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve unknown tags in 1 request.
+	page := int(s.tagSweepPage.Add(1) - 1)
+	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr == nil {
+		if len(bulkTags) == 0 {
+			s.tagSweepPage.Store(0)
+		}
 		for _, bt := range bulkTags {
 			name := strings.ToLower(strings.TrimSpace(bt.Name))
-			if name != "" {
+			if _, isUnknown := unknownSet[name]; isUnknown {
 				updates[name] = bt.Type.Normalize()
 			}
 		}
@@ -1454,7 +1462,10 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 
 	consecutiveErrors := 0
 	for _, name := range names {
-		if _, already := updates[name]; already {
+		if len(updates) >= limit {
+			break
+		}
+		if _, alreadyResolved := updates[name]; alreadyResolved {
 			continue
 		}
 		if rCtx.Err() != nil {
@@ -1472,6 +1483,8 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		consecutiveErrors = 0
 		if tagInfo != nil {
 			updates[name] = tagInfo.Type.Normalize()
+		} else {
+			updates[name] = hypnohub.TagTypeGeneral
 		}
 	}
 	if len(updates) == 0 {
