@@ -73,7 +73,12 @@ ON CONFLICT(post_id, tag_id) DO NOTHING;
 
 -- name: UpdateTagPostCount :exec
 UPDATE tags
-SET post_count = (SELECT COUNT(*) FROM post_tags WHERE tag_id = sqlc.arg(id))
+SET post_count = (
+    SELECT COUNT(*)
+    FROM post_tags pt
+    JOIN posts p ON p.id = pt.post_id
+    WHERE pt.tag_id = sqlc.arg(id) AND p.status = 'active'
+)
 WHERE id = sqlc.arg(id);
 
 -- name: PruneOldSnapshots :exec
@@ -99,9 +104,9 @@ LIMIT ?;
 SELECT
     name,
     post_count,
-    (name LIKE sqlc.arg(prefix)) AS is_prefix
+    like(sqlc.arg(prefix), name, '\') AS is_prefix
 FROM tags
-WHERE post_count > 0 AND name LIKE sqlc.arg(pattern)
+WHERE post_count > 0 AND like(sqlc.arg(pattern), name, '\')
 ORDER BY
     is_prefix DESC,
     post_count DESC,

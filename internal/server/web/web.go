@@ -863,7 +863,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode feedMod
 	if page > 1 || tagsQuery != "" || r.URL.RawQuery != "" {
 		data.RobotsMeta = "noindex, follow"
 	}
-	if mode == "popular" {
+	if mode == feedModePopular {
 		data.OpenGraph.Description = "Trending Hypnohub posts ranked by score velocity and momentum."
 	}
 	if len(res.Posts) > 0 {

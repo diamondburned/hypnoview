@@ -536,9 +536,9 @@ const searchTagsByPrefix = `-- name: SearchTagsByPrefix :many
 SELECT
     name,
     post_count,
-    (name LIKE ?1) AS is_prefix
+    like(?1, name, '\') AS is_prefix
 FROM tags
-WHERE post_count > 0 AND name LIKE ?2
+WHERE post_count > 0 AND like(?2, name, '\')
 ORDER BY
     is_prefix DESC,
     post_count DESC,
@@ -555,7 +555,7 @@ type SearchTagsByPrefixParams struct {
 type SearchTagsByPrefixRow struct {
 	Name      string
 	PostCount int64
-	IsPrefix  interface{}
+	IsPrefix  int64
 }
 
 // SearchTagsByPrefix
@@ -563,9 +563,9 @@ type SearchTagsByPrefixRow struct {
 //	SELECT
 //	    name,
 //	    post_count,
-//	    (name LIKE ?1) AS is_prefix
+//	    like(?1, name, '\') AS is_prefix
 //	FROM tags
-//	WHERE post_count > 0 AND name LIKE ?2
+//	WHERE post_count > 0 AND like(?2, name, '\')
 //	ORDER BY
 //	    is_prefix DESC,
 //	    post_count DESC,
@@ -624,14 +624,24 @@ func (q *Queries) UpdatePostGroup(ctx context.Context, arg UpdatePostGroupParams
 
 const updateTagPostCount = `-- name: UpdateTagPostCount :exec
 UPDATE tags
-SET post_count = (SELECT COUNT(*) FROM post_tags WHERE tag_id = ?1)
+SET post_count = (
+    SELECT COUNT(*)
+    FROM post_tags pt
+    JOIN posts p ON p.id = pt.post_id
+    WHERE pt.tag_id = ?1 AND p.status = 'active'
+)
 WHERE id = ?1
 `
 
 // UpdateTagPostCount
 //
 //	UPDATE tags
-//	SET post_count = (SELECT COUNT(*) FROM post_tags WHERE tag_id = ?1)
+//	SET post_count = (
+//	    SELECT COUNT(*)
+//	    FROM post_tags pt
+//	    JOIN posts p ON p.id = pt.post_id
+//	    WHERE pt.tag_id = ?1 AND p.status = 'active'
+//	)
 //	WHERE id = ?1
 func (q *Queries) UpdateTagPostCount(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, updateTagPostCount, id)

@@ -16,11 +16,11 @@
 					<div class="group-switcher-nav">
 						{{ if .PrevGroupPostID }}
 						<a
-							href="/posts/{{ .PrevGroupPostID }}?back={{ urlquery .BackURL }}"
+							href="/posts/{{ .PrevGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 							id="group-prev-btn"
 							class="page-btn group-nav-btn"
 							title="Previous page (Left Arrow)"
-							hx-get="/posts/{{ .PrevGroupPostID }}?back={{ urlquery .BackURL }}"
+							hx-get="/posts/{{ .PrevGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 							hx-target="#post-detail"
 							hx-select="#post-detail"
 							hx-swap="outerHTML show:none"
@@ -32,11 +32,11 @@
 
 						{{ if .NextGroupPostID }}
 						<a
-							href="/posts/{{ .NextGroupPostID }}?back={{ urlquery .BackURL }}"
+							href="/posts/{{ .NextGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 							id="group-next-btn"
 							class="page-btn group-nav-btn"
 							title="Next page (Right Arrow)"
-							hx-get="/posts/{{ .NextGroupPostID }}?back={{ urlquery .BackURL }}"
+							hx-get="/posts/{{ .NextGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 							hx-target="#post-detail"
 							hx-select="#post-detail"
 							hx-swap="outerHTML show:none"
@@ -53,11 +53,11 @@
 					{{ $pageNo := add $idx 1 }}
 					{{ $isActive := eq $gp.ID $.Post.ID }}
 					<a
-						href="/posts/{{ $gp.ID }}?back={{ urlquery $.BackURL }}"
+						href="/posts/{{ $gp.ID }}{{ if and $.BackURL (ne $.BackURL "/") }}?back={{ urlquery $.BackURL }}{{ end }}"
 						class="group-page-pill {{ if $isActive }}active{{ end }}"
 						title="Page {{ $pageNo }}"
 						{{ if $isActive }}aria-current="page"{{ end }}
-						hx-get="/posts/{{ $gp.ID }}?back={{ urlquery $.BackURL }}"
+						hx-get="/posts/{{ $gp.ID }}{{ if and $.BackURL (ne $.BackURL "/") }}?back={{ urlquery $.BackURL }}{{ end }}"
 						hx-target="#post-detail"
 						hx-select="#post-detail"
 						hx-swap="outerHTML show:none"
@@ -76,7 +76,7 @@
 				data-width="{{ .Post.Width }}"
 				data-height="{{ .Post.Height }}"
 				data-file-url="{{ .Post.FileURL }}"
-				data-sample-url="{{ .Post.SampleURL }}"
+				data-sample-url="{{ thumbURL .Post }}"
 				data-preview-url="{{ .Post.PreviewURL }}"
 			>
 				<div class="media-wrap">

@@ -1192,9 +1192,10 @@ func (s *Store) SearchTags(ctx context.Context, query string, limit int) ([]TagS
 		return tags, nil
 	}
 
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 	rows, err := s.q.SearchTagsByPrefix(ctx, sqlcgen.SearchTagsByPrefixParams{
-		Pattern: "%" + q + "%",
-		Prefix:  q + "%",
+		Pattern: "%" + escaped + "%",
+		Prefix:  escaped + "%",
 		Limit:   int64(limit),
 	})
 	if err != nil {

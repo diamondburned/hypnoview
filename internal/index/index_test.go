@@ -1075,6 +1075,132 @@ func TestGetPostMatchesPopularWhenPollIsStale(t *testing.T) {
 	}
 }
 
+func TestSearchTagsUnderscoreEscapeAndActiveCount(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+
+	// 1. Ingest posts with tags "a_b" and "axb"
+	p1 := hypnohub.Post{
+		ID:        1,
+		Score:     10,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "a_b testtag",
+		FileURL:   "https://hypnohub.net/1.jpg",
+		SampleURL: "https://hypnohub.net/1.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(now),
+		Status:    "active",
+	}
+	p2 := hypnohub.Post{
+		ID:        2,
+		Score:     10,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "axb othertag",
+		FileURL:   "https://hypnohub.net/2.jpg",
+		SampleURL: "https://hypnohub.net/2.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(now),
+		Status:    "active",
+	}
+
+	// 2. Ingest post with tag "inactive_only" on a flagged post
+	p3 := hypnohub.Post{
+		ID:        3,
+		Score:     5,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "inactive_only",
+		FileURL:   "https://hypnohub.net/3.jpg",
+		SampleURL: "https://hypnohub.net/3.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(now),
+		Status:    "flagged",
+	}
+
+	// 3. Ingest post with tag "deleted_only" on a deleted post
+	p4 := hypnohub.Post{
+		ID:        4,
+		Score:     5,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "deleted_only",
+		FileURL:   "https://hypnohub.net/4.jpg",
+		SampleURL: "https://hypnohub.net/4.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(now),
+		Status:    "deleted",
+	}
+
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p1, p2, p3, p4}, now, now, now, 1, false); err != nil {
+		t.Fatalf("ingest batch: %v", err)
+	}
+
+	// Test 1: Searching for "a_b" should only return "a_b", not "axb"
+	tags, err := store.SearchTags(ctx, "a_b", 10)
+	if err != nil {
+		t.Fatalf("SearchTags 'a_b' failed: %v", err)
+	}
+	if len(tags) != 1 {
+		t.Fatalf("expected exactly 1 tag for 'a_b', got %d: %+v", len(tags), tags)
+	}
+	if tags[0].Name != "a_b" {
+		t.Errorf("expected tag 'a_b', got %q", tags[0].Name)
+	}
+
+	// Test 2: Inactive-only tags ("inactive_only", "deleted_only") must have post_count == 0 and be excluded
+	for _, tag := range []string{"inactive_only", "deleted_only"} {
+		res, err := store.SearchTags(ctx, tag, 10)
+		if err != nil {
+			t.Fatalf("SearchTags %q failed: %v", tag, err)
+		}
+		if len(res) != 0 {
+			t.Errorf("expected tag %q to be excluded (post_count == 0), but got: %+v", tag, res)
+		}
+	}
+
+	// Test 3: Active post transitioning to flagged updates tag post_count to 0
+	p5 := hypnohub.Post{
+		ID:        5,
+		Score:     10,
+		Rating:    hypnohub.RatingExplicit,
+		Tags:      "dynamic_tag",
+		FileURL:   "https://hypnohub.net/5.jpg",
+		SampleURL: "https://hypnohub.net/5.jpg",
+		Width:     800,
+		Height:    600,
+		CreatedAt: hypnohub.Date(now),
+		Status:    "active",
+	}
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p5}, now, now, now, 1, false); err != nil {
+		t.Fatalf("ingest p5 active: %v", err)
+	}
+	resDynamic, err := store.SearchTags(ctx, "dynamic_tag", 10)
+	if err != nil || len(resDynamic) != 1 {
+		t.Fatalf("expected dynamic_tag to have post_count > 0, got %+v (err: %v)", resDynamic, err)
+	}
+
+	// Transition p5 to flagged
+	p5.Status = "flagged"
+	if _, err := store.IngestBatch(ctx, []hypnohub.Post{p5}, now, now, now, 1, false); err != nil {
+		t.Fatalf("ingest p5 flagged: %v", err)
+	}
+	resDynamicAfter, err := store.SearchTags(ctx, "dynamic_tag", 10)
+	if err != nil {
+		t.Fatalf("SearchTags dynamic_tag after transition: %v", err)
+	}
+	if len(resDynamicAfter) != 0 {
+		t.Errorf("expected dynamic_tag to be excluded after transition to flagged, got: %+v", resDynamicAfter)
+	}
+}
+
 func TestPostGroupingLinearAndCircular(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")

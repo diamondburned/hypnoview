@@ -193,12 +193,12 @@ function applyVisualSettings(s) {
 	el.dataset.thumbFit = s.thumbFit === "contain" ? "contain" : "cover";
 
 	const maxCols = parseInt(s.maxColumns, 10);
-	if (maxCols >= 1 && maxCols <= 8) {
+	if (maxCols >= 1 && maxCols <= 10) {
 		el.style.setProperty("--grid-max-cols", String(maxCols));
 	}
 
 	const minW = parseInt(s.minColumnWidth, 10);
-	if (minW >= 150 && minW <= 380) {
+	if (minW >= 150 && minW <= 420) {
 		el.style.setProperty("--grid-min-width", `${minW}px`);
 	}
 
@@ -1229,6 +1229,9 @@ if (lightbox && cards.length > 0) {
 			});
 		}
 
+		const isVid = ["mp4", "webm"].includes(gp.file_ext);
+		const posterUrl = isVid ? (gp.preview_url || gp.sample_url) : (gp.sample_url || gp.preview_url);
+
 		renderLightboxPostData({
 			id: gp.id,
 			score: gp.score,
@@ -1241,7 +1244,7 @@ if (lightbox && cards.length > 0) {
 			sampleUrl: gp.sample_url,
 			previewUrl: gp.preview_url,
 			tags: gp.tags
-		}, gp.sample_url || gp.preview_url);
+		}, posterUrl);
 
 		updateGroupNavArrows();
 	}
