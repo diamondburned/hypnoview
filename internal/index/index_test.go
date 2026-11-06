@@ -2441,7 +2441,7 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
 			if q.Get("pid") == "0" {
-				// Return tags NOT in unknownSet on page 0 so updates is not polluted by unrelated tags.
+				// Return only tags absent from the local index so page 0 changes no rows.
 				_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array">
 					<tag type="3" count="999" name="unrelated_tag_1" ambiguous="false" id="1"/>
 					<tag type="4" count="888" name="unrelated_tag_2" ambiguous="false" id="2"/>
@@ -2544,12 +2544,16 @@ func TestResolveUnknownTagCategoriesBulkThroughput(t *testing.T) {
 			t.Fatalf("inserting %s: %v", name, err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tags (name, post_count, category) VALUES ('known_artist', 10, 1)`); err != nil {
+		t.Fatalf("inserting known_artist: %v", err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
 	var bulkBody strings.Builder
 	bulkBody.WriteString(`<?xml version="1.0" encoding="UTF-8"?><tags type="array">`)
+	bulkBody.WriteString(`<tag count="1" name="known_artist" id="99999"/>`)
 	for i := range 1000 {
 		fmt.Fprintf(&bulkBody, `<tag type="1" count="50" name="bulk_tag_%04d" ambiguous="false" id="%d"/>`, i, i+1)
 	}
@@ -2584,6 +2588,14 @@ func TestResolveUnknownTagCategoriesBulkThroughput(t *testing.T) {
 	}
 	if got := singleLookups.Load(); got > 20 {
 		t.Errorf("expected at most 20 single-tag name= lookups, got %d", got)
+	}
+
+	var knownCat int
+	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'known_artist'").Scan(&knownCat); err != nil {
+		t.Fatalf("querying known_artist category: %v", err)
+	}
+	if knownCat != int(hypnohub.TagTypeArtist) {
+		t.Errorf("known_artist category = %d, want %d (TagTypeArtist); must not be overwritten by typeless bulk tag", knownCat, hypnohub.TagTypeArtist)
 	}
 }
 

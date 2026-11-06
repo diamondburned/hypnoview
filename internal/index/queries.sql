@@ -169,7 +169,7 @@ ORDER BY t.name ASC;
 -- name: UpdateTagCategoryByName :execrows
 UPDATE tags
 SET category = sqlc.arg(category)
-WHERE name = sqlc.arg(name) AND category != sqlc.arg(category);
+WHERE name = sqlc.arg(name) AND category = -1;
 
 -- name: ListUnknownCategoryTags :many
 SELECT name

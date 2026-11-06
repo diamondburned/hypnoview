@@ -780,7 +780,7 @@ func (q *Queries) UpdatePostGroup(ctx context.Context, arg UpdatePostGroupParams
 const updateTagCategoryByName = `-- name: UpdateTagCategoryByName :execrows
 UPDATE tags
 SET category = ?1
-WHERE name = ?2 AND category != ?1
+WHERE name = ?2 AND category = -1
 `
 
 type UpdateTagCategoryByNameParams struct {
@@ -792,7 +792,7 @@ type UpdateTagCategoryByNameParams struct {
 //
 //	UPDATE tags
 //	SET category = ?1
-//	WHERE name = ?2 AND category != ?1
+//	WHERE name = ?2 AND category = -1
 func (q *Queries) UpdateTagCategoryByName(ctx context.Context, arg UpdateTagCategoryByNameParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateTagCategoryByName, arg.Category, arg.Name)
 	if err != nil {
