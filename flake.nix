@@ -56,6 +56,7 @@
               go
               gopls
               gotools
+              go-tools
               sqlc
               just
               reflex

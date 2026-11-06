@@ -18,6 +18,8 @@ const (
 	DefaultPollHorizon = 30 * 24 * time.Hour
 	// DefaultMaxPollPages caps the number of 1000-post pages fetched during a regular poll.
 	DefaultMaxPollPages = 6
+	// DefaultRetention is the snapshot retention window; 0 preserves all snapshots indefinitely.
+	DefaultRetention time.Duration = 0
 	// maxFetchRetries is the number of retries per page fetch on transient upstream errors.
 	maxFetchRetries = 3
 )

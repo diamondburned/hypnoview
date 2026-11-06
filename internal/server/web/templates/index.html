@@ -12,7 +12,7 @@
 			<form class="search-form" method="get" action="{{ if .FormAction }}{{ .FormAction }}{{ else }}/{{ end }}">
 				<input type="hidden" name="window" value="{{ .Window }}" />
 				<input type="hidden" name="sort" value="{{ .Sort }}" />
-				{{ if .Rating }}<input type="hidden" name="rating" value="{{ .Rating }}" />{{ end }}
+				{{ if .RatingParam }}<input type="hidden" name="rating" value="{{ .RatingParam }}" />{{ end }}
 				{{ if .Media }}<input type="hidden" name="media" value="{{ .Media }}" />{{ end }}
 
 				<div class="search-input-wrap">

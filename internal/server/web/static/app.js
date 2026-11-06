@@ -77,19 +77,20 @@ const DEFAULT_SETTINGS = {
 function loadSettings() {
 	try {
 		const raw = localStorage.getItem("hypnogaze.settings") || localStorage.getItem("hypnoview.settings");
-		if (!raw) return { ...DEFAULT_SETTINGS };
+		if (!raw) return structuredClone(DEFAULT_SETTINGS);
 		const parsed = JSON.parse(raw);
+		const def = structuredClone(DEFAULT_SETTINGS);
 		return {
-			...DEFAULT_SETTINGS,
+			...def,
 			...parsed,
 			thumbFit: parsed.thumbFit === "contain" ? "contain" : "cover",
 			enableLightbox: parsed.enableLightbox !== false,
-			defaultWindow: { ...DEFAULT_SETTINGS.defaultWindow, ...(parsed.defaultWindow || {}) },
-			defaultSort: { ...DEFAULT_SETTINGS.defaultSort, ...(parsed.defaultSort || {}) },
+			defaultWindow: { ...def.defaultWindow, ...(parsed.defaultWindow || {}) },
+			defaultSort: { ...def.defaultSort, ...(parsed.defaultSort || {}) },
 			blockedTags: Array.isArray(parsed.blockedTags) ? parsed.blockedTags : []
 		};
 	} catch (_) {
-		return { ...DEFAULT_SETTINGS };
+		return structuredClone(DEFAULT_SETTINGS);
 	}
 }
 
@@ -301,8 +302,26 @@ function renderBlocklistChips() {
 	(currentSettings.blockedTags || []).forEach((tag) => {
 		const chip = document.createElement("span");
 		chip.className = "blocklist-chip";
-		chip.innerHTML = `<span class="blocklist-chip-tag">${tag}</span><button type="button" class="blocklist-chip-remove" aria-label="Remove blocked tag ${tag}"><span class="material-symbols-rounded" aria-hidden="true">close</span></button>`;
-		chip.querySelector(".blocklist-chip-remove").addEventListener("click", () => {
+
+		const tagSpan = document.createElement("span");
+		tagSpan.className = "blocklist-chip-tag";
+		tagSpan.textContent = tag;
+
+		const removeBtn = document.createElement("button");
+		removeBtn.type = "button";
+		removeBtn.className = "blocklist-chip-remove";
+		removeBtn.setAttribute("aria-label", `Remove blocked tag ${tag}`);
+
+		const iconSpan = document.createElement("span");
+		iconSpan.className = "material-symbols-rounded";
+		iconSpan.setAttribute("aria-hidden", "true");
+		iconSpan.textContent = "close";
+
+		removeBtn.appendChild(iconSpan);
+		chip.appendChild(tagSpan);
+		chip.appendChild(removeBtn);
+
+		removeBtn.addEventListener("click", () => {
 			currentSettings.blockedTags = currentSettings.blockedTags.filter((t) => t !== tag);
 			saveSettings(currentSettings);
 			renderBlocklistChips();
@@ -335,6 +354,7 @@ function syncSettingsDialogUI() {
 	if (minWidthInput) minWidthInput.value = currentSettings.minColumnWidth;
 	if (minWidthVal) minWidthVal.textContent = `${currentSettings.minColumnWidth}px`;
 
+	setSegmentedActive("setting-sort-browse", currentSettings.defaultSort?.browse || "new");
 	setSegmentedActive("setting-window-popular", currentSettings.defaultWindow?.popular || "24h");
 	setSegmentedActive("setting-window-browse", currentSettings.defaultWindow?.browse || "all");
 	setSegmentedActive("setting-default-rating", currentSettings.defaultRating || "");
@@ -405,6 +425,16 @@ settingMinWidth?.addEventListener("input", () => {
 	if (valBadge) valBadge.textContent = `${val}px`;
 	saveSettings(currentSettings);
 	updateSettingsJsonTextarea();
+});
+
+document.querySelectorAll("#setting-sort-browse .segmented-btn").forEach((btn) => {
+	btn.addEventListener("click", () => {
+		if (!currentSettings.defaultSort) currentSettings.defaultSort = {};
+		currentSettings.defaultSort.browse = btn.dataset.value;
+		saveSettings(currentSettings);
+		setSegmentedActive("setting-sort-browse", currentSettings.defaultSort.browse);
+		updateSettingsJsonTextarea();
+	});
 });
 
 document.querySelectorAll("#setting-window-popular .segmented-btn").forEach((btn) => {
@@ -499,6 +529,9 @@ function bindAutocompleteBox(inputEl, boxEl, onSelect) {
 	}
 
 	boxEl.addEventListener("htmx:afterSwap", () => {
+		activeIdx = -1;
+	});
+	inputEl.addEventListener("htmx:afterSwap", () => {
 		activeIdx = -1;
 	});
 
@@ -808,9 +841,6 @@ function createZoomableMediaViewer(options) {
 		let computedW;
 		if (zoomMode === "original") {
 			computedW = Math.min(postW, maxWidthCap);
-			if (computedW <= r.width && maxWidthCap > r.width) {
-				computedW = maxWidthCap;
-			}
 		} else if (zoomMode === "2x") {
 			computedW = Math.min(Math.round(r.width * 2), maxWidthCap);
 		} else if (zoomMode === "3x") {
@@ -820,7 +850,15 @@ function createZoomableMediaViewer(options) {
 			computedW = maxWidthCap;
 		}
 
-		targetW = Math.min(computedW, maxWidthCap);
+		// Ensure clicking to zoom never shrinks an already-large image
+		if (computedW <= r.width && maxWidthCap > r.width) {
+			computedW = maxWidthCap;
+		}
+		if (computedW < r.width) {
+			computedW = r.width;
+		}
+
+		targetW = Math.round(computedW);
 		targetH = Math.round(targetW / ar);
 
 		currentZoomScale = r.width > 0 ? (targetW / r.width) : 1;
@@ -963,19 +1001,29 @@ function createZoomableMediaViewer(options) {
 			return;
 		}
 
+		let inMedia = false;
+		if (isZoomed) {
+			const mr = mediaWrap.getBoundingClientRect();
+			inMedia = e.clientX >= mr.left && e.clientX <= mr.right && e.clientY >= mr.top && e.clientY <= mr.bottom;
+		} else {
+			const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
+			const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
+			inMedia = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+		}
+
+		// Clicking outside the rendered media in lightbox closes the lightbox even when zoomed
+		if (!inMedia && onOutsideClick) {
+			onOutsideClick();
+			return;
+		}
+
 		if (isZoomed) {
 			toggleZoom();
 			return;
 		}
 
-		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
-		const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
-		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-
-		if (inImage) {
+		if (inMedia) {
 			toggleZoom(e.clientX, e.clientY);
-		} else if (onOutsideClick) {
-			onOutsideClick();
 		}
 	}
 
@@ -1086,9 +1134,7 @@ function createZoomableMediaViewer(options) {
 		e.stopPropagation();
 		preferHD = !preferHD;
 		currentSettings.preferHD = preferHD;
-		try {
-			localStorage.setItem("hypnogaze_settings", JSON.stringify(currentSettings));
-		} catch (_) {}
+		saveSettings(currentSettings);
 		if (currentPost) {
 			loadMedia(currentPost, currentThumbSrc);
 		}
@@ -1114,12 +1160,7 @@ function createZoomableMediaViewer(options) {
 			zoomToggleBtn?.removeEventListener("click", onZoomToggleClick);
 			hdToggleBtn?.removeEventListener("click", onHdToggleClick);
 		},
-		isZoomed: () => isZoomed,
-		getPreferHD: () => preferHD,
-		setPreferHD(val) {
-			preferHD = val;
-			if (currentPost) loadMedia(currentPost, currentThumbSrc);
-		}
+		isZoomed: () => isZoomed
 	};
 }
 
@@ -1357,13 +1398,11 @@ if (lightbox && cards.length > 0) {
 	// Touch swipe navigation for mobile (across pages of a group)
 	let touchStartX = 0;
 	let touchStartY = 0;
-	let didSwipe = false;
 
 	lbStage?.addEventListener("touchstart", (e) => {
 		if (e.touches.length === 1) {
 			touchStartX = e.touches[0].clientX;
 			touchStartY = e.touches[0].clientY;
-			didSwipe = false;
 		}
 	}, { passive: true });
 
@@ -1373,7 +1412,6 @@ if (lightbox && cards.length > 0) {
 		const dx = e.changedTouches[0].clientX - touchStartX;
 		const dy = e.changedTouches[0].clientY - touchStartY;
 		if (Math.abs(dx) > 45 && Math.abs(dy) < 90) {
-			didSwipe = true;
 			if (currentGroupPosts.length > 1) {
 				if (dx < 0 && currentGroupIndex < currentGroupPosts.length - 1) {
 					goToGroupPage(currentGroupIndex + 1);

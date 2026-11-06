@@ -15,7 +15,7 @@ generate:
 
 # run all offline unit tests
 test:
-	go test -v ./... -skip=Example
+	CGO_ENABLED=1 go test -v -race ./... -skip=Example
 
 # build hypnogaze package with nix
 build:

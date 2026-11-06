@@ -982,3 +982,317 @@ func TestPostGroupingLinearAndCircular(t *testing.T) {
 		t.Errorf("self loop post: expected GroupIsLatest true")
 	}
 }
+
+func TestOpenCanceledContextPreservesDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test_preserve.db"
+	ctx := context.Background()
+
+	// 1. Initialize store and write a post
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	now := time.Now().UTC()
+	_, err = store.IngestBatch(ctx, []hypnohub.Post{
+		{ID: 10, Score: 5, Rating: hypnohub.RatingSafe, Status: "active", CreatedAt: hypnohub.Date(now)},
+	}, now, now, now, 1, false)
+	if err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// 2. Call Open with a canceled context
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	store2, err := Open(canceledCtx, dbPath)
+	if err == nil {
+		store2.Close()
+		t.Fatalf("expected error when opening with canceled context, got nil")
+	}
+
+	// Assert that no .bak file was created
+	bakPath := dbPath + ".bak"
+	if _, err := os.Stat(bakPath); err == nil {
+		t.Fatalf("canceled context caused .bak file to be created!")
+	}
+
+	// 3. Opening with normal context should succeed and still have the post
+	store3, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open after canceled context failed: %v", err)
+	}
+	defer store3.Close()
+
+	post, _, err := store3.GetPost(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetPost failed: %v", err)
+	}
+	if post.ID != 10 {
+		t.Errorf("expected post ID 10, got %d", post.ID)
+	}
+}
+
+func TestOpenCorruptedDatabaseBackupPreservesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/corrupt.db"
+	bakPath := dbPath + ".bak"
+
+	// Create a pre-existing .bak file
+	initialBakContent := "initial-backup-content"
+	if err := os.WriteFile(bakPath, []byte(initialBakContent), 0644); err != nil {
+		t.Fatalf("writing initial bak: %v", err)
+	}
+
+	// Create a corrupt sqlite file
+	if err := os.WriteFile(dbPath, []byte("NOT_A_VALID_SQLITE_DATABASE_HEADER_GARBAGE"), 0644); err != nil {
+		t.Fatalf("writing corrupt db: %v", err)
+	}
+
+	ctx := context.Background()
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open on corrupt db failed: %v", err)
+	}
+	defer store.Close()
+
+	// Verify new healthy DB works
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats on recreated db failed: %v", err)
+	}
+	if stats.TotalPosts != 0 {
+		t.Errorf("expected 0 posts in clean recreated db, got %d", stats.TotalPosts)
+	}
+
+	// Verify corrupt file was moved to .bak
+	corruptBakData, err := os.ReadFile(bakPath)
+	if err != nil {
+		t.Fatalf("reading corrupt bak: %v", err)
+	}
+	if !strings.Contains(string(corruptBakData), "NOT_A_VALID_SQLITE") {
+		t.Errorf("expected .bak to contain corrupt data, got %s", string(corruptBakData))
+	}
+
+	// Verify the pre-existing .bak was preserved with a timestamp suffix
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("reading tmpDir: %v", err)
+	}
+	foundTimestampBak := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "corrupt.db.") && strings.HasSuffix(e.Name(), ".bak") {
+			content, _ := os.ReadFile(tmpDir + "/" + e.Name())
+			if string(content) == initialBakContent {
+				foundTimestampBak = true
+				break
+			}
+		}
+	}
+	if !foundTimestampBak {
+		t.Errorf("pre-existing backup was not preserved with timestamp suffix!")
+	}
+}
+
+func TestPostGroupParentRemoved(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	// Step 1: Ingest A (601) and B (602, parent=601)
+	batch1 := []hypnohub.Post{
+		{ID: 601, Score: 10, Status: "active", HasChildren: true, CreatedAt: hypnohub.Date(now.Add(-2 * time.Hour))},
+		{ID: 602, Score: 15, Status: "active", ParentID: 601, CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour))},
+	}
+	if _, err := store.IngestBatch(ctx, batch1, now, now, now, 1, false); err != nil {
+		t.Fatalf("batch 1 failed: %v", err)
+	}
+
+	p601, _, err := store.GetPost(ctx, 601)
+	if err != nil || p601.GroupPageCount != 2 || p601.GroupID != 601 {
+		t.Fatalf("p601 unexpected: %+v (err=%v)", p601, err)
+	}
+	p602, _, err := store.GetPost(ctx, 602)
+	if err != nil || p602.GroupPageCount != 2 || p602.GroupID != 601 || !p602.GroupIsLatest {
+		t.Fatalf("p602 unexpected: %+v (err=%v)", p602, err)
+	}
+
+	// Step 2: Re-ingest 602 with parent=0 (detached) and 601 with HasChildren=false
+	batch2 := []hypnohub.Post{
+		{ID: 601, Score: 10, Status: "active", HasChildren: false, CreatedAt: hypnohub.Date(now.Add(-2 * time.Hour))},
+		{ID: 602, Score: 15, Status: "active", ParentID: 0, CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour))},
+	}
+	if _, err := store.IngestBatch(ctx, batch2, now, now, now, 1, false); err != nil {
+		t.Fatalf("batch 2 failed: %v", err)
+	}
+
+	p601, _, err = store.GetPost(ctx, 601)
+	if err != nil || p601.GroupID != 0 || p601.GroupPageCount != 1 || !p601.GroupIsLatest {
+		t.Errorf("p601 after parent removal: GroupID=%d, GroupPageCount=%d, GroupIsLatest=%v", p601.GroupID, p601.GroupPageCount, p601.GroupIsLatest)
+	}
+	p602, _, err = store.GetPost(ctx, 602)
+	if err != nil || p602.GroupID != 0 || p602.GroupPageCount != 1 || !p602.GroupIsLatest {
+		t.Errorf("p602 after parent removal: GroupID=%d, GroupPageCount=%d, GroupIsLatest=%v", p602.GroupID, p602.GroupPageCount, p602.GroupIsLatest)
+	}
+}
+
+func TestPostGroupUnindexedParent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	// B (720) and C (730) both have parent 710, where 710 is NOT indexed
+	batch := []hypnohub.Post{
+		{ID: 720, Score: 5, Status: "active", ParentID: 710, CreatedAt: hypnohub.Date(now.Add(-2 * time.Hour))},
+		{ID: 730, Score: 8, Status: "active", ParentID: 710, CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour))},
+	}
+	if _, err := store.IngestBatch(ctx, batch, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	p720, _, err := store.GetPost(ctx, 720)
+	if err != nil {
+		t.Fatalf("getting p720: %v", err)
+	}
+	p730, _, err := store.GetPost(ctx, 730)
+	if err != nil {
+		t.Fatalf("getting p730: %v", err)
+	}
+
+	if p720.GroupID != 720 || p720.GroupPageCount != 2 || p720.GroupIsLatest {
+		t.Errorf("p720 unexpected: GroupID=%d, PageCount=%d, Latest=%v", p720.GroupID, p720.GroupPageCount, p720.GroupIsLatest)
+	}
+	if p730.GroupID != 720 || p730.GroupPageCount != 2 || !p730.GroupIsLatest {
+		t.Errorf("p730 unexpected: GroupID=%d, PageCount=%d, Latest=%v", p730.GroupID, p730.GroupPageCount, p730.GroupIsLatest)
+	}
+}
+
+func TestPostGroupDeletedMemberExcluded(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	// Ingest A (801), B (802), C (803) in group
+	batch1 := []hypnohub.Post{
+		{ID: 801, Score: 5, Status: "active", HasChildren: true, CreatedAt: hypnohub.Date(now.Add(-3 * time.Hour))},
+		{ID: 802, Score: 6, Status: "active", ParentID: 801, CreatedAt: hypnohub.Date(now.Add(-2 * time.Hour))},
+		{ID: 803, Score: 7, Status: "active", ParentID: 801, CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour))},
+	}
+	if _, err := store.IngestBatch(ctx, batch1, now, now, now, 1, false); err != nil {
+		t.Fatalf("batch1 failed: %v", err)
+	}
+
+	p803, _, err := store.GetPost(ctx, 803)
+	if err != nil || p803.GroupPageCount != 3 || !p803.GroupIsLatest {
+		t.Fatalf("p803 initial: %+v", p803)
+	}
+
+	// Mark C (803) as deleted
+	batch2 := []hypnohub.Post{
+		{ID: 803, Score: 7, Status: "deleted", ParentID: 801, CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour))},
+	}
+	if _, err := store.IngestBatch(ctx, batch2, now, now, now, 1, false); err != nil {
+		t.Fatalf("batch2 failed: %v", err)
+	}
+
+	p801, _, err := store.GetPost(ctx, 801)
+	if err != nil || p801.GroupPageCount != 2 || p801.GroupID != 801 {
+		t.Errorf("p801 after member deleted: %+v", p801)
+	}
+	p802, _, err := store.GetPost(ctx, 802)
+	if err != nil || p802.GroupPageCount != 2 || p802.GroupID != 801 || !p802.GroupIsLatest {
+		t.Errorf("p802 after member deleted: %+v", p802)
+	}
+	gps, err := store.GetGroupPosts(ctx, 801)
+	if err != nil || len(gps) != 2 {
+		t.Errorf("GetGroupPosts expected 2 active posts, got %d (err=%v)", len(gps), err)
+	}
+}
+
+func TestCollapseGroupsWithTagAndRatingFilters(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	// Group of 2 posts:
+	// Page 1 (901) has tag "mind_control" and rating "safe"
+	// Page 2 (902) has tag "hypnosis" and rating "explicit"
+	batch := []hypnohub.Post{
+		{
+			ID:          901,
+			Score:       15,
+			Rating:      hypnohub.RatingSafe,
+			Tags:        "mind_control comic",
+			Status:      "active",
+			HasChildren: true,
+			CreatedAt:   hypnohub.Date(now.Add(-2 * time.Hour)),
+		},
+		{
+			ID:        902,
+			Score:     25,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "hypnosis trance",
+			Status:    "active",
+			ParentID:  901,
+			CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour)),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, batch, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	// 1. Tag search matching only Page 1 with CollapseGroups=true
+	res, err := store.QueryPosts(ctx, QueryOptions{
+		Window:         WindowAllTime,
+		Sort:           SortNew,
+		CollapseGroups: true,
+		IncludeTags:    []string{"mind_control"},
+		Now:            now,
+	})
+	if err != nil {
+		t.Fatalf("QueryPosts failed: %v", err)
+	}
+	if res.Total != 1 || len(res.Posts) != 1 {
+		t.Fatalf("expected 1 group returned for mind_control with CollapseGroups=true, got Total=%d, Posts=%d", res.Total, len(res.Posts))
+	}
+	if res.Posts[0].ID != 901 {
+		t.Errorf("expected matching post 901, got %d", res.Posts[0].ID)
+	}
+
+	// 2. Rating search matching only Page 1 (safe) with CollapseGroups=true
+	resRating, err := store.QueryPosts(ctx, QueryOptions{
+		Window:         WindowAllTime,
+		Sort:           SortNew,
+		CollapseGroups: true,
+		Rating:         hypnohub.RatingSafe,
+		Now:            now,
+	})
+	if err != nil {
+		t.Fatalf("QueryPosts rating failed: %v", err)
+	}
+	if resRating.Total != 1 || len(resRating.Posts) != 1 {
+		t.Fatalf("expected 1 group returned for rating=safe with CollapseGroups=true, got Total=%d, Posts=%d", resRating.Total, len(resRating.Posts))
+	}
+	if resRating.Posts[0].ID != 901 {
+		t.Errorf("expected post 901, got %d", resRating.Posts[0].ID)
+	}
+}

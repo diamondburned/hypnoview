@@ -321,6 +321,7 @@ type indexPageData struct {
 	Sort                    string
 	Rating                  string
 	RawRating               string
+	RatingParam             string
 	Media                   string
 	TagsQuery               string
 	ActiveTags              []string
@@ -793,6 +794,11 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 		continuationURL = "https://hypnohub.net/index.php?page=post&s=list&tags=" + url.QueryEscape(strings.Join(tagParts, " "))
 	}
 
+	ratingParam := rating
+	if rawRating == "all" {
+		ratingParam = "all"
+	}
+
 	data := indexPageData{
 		Title:                   pageTitle,
 		ActiveNav:               mode,
@@ -801,6 +807,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 		Sort:                    string(sortMode),
 		Rating:                  rating,
 		RawRating:               rawRating,
+		RatingParam:             ratingParam,
 		Media:                   media,
 		TagsQuery:               tagsQuery,
 		ActiveTags:              strings.Fields(tagsQuery),
@@ -856,6 +863,28 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 	s.renderTemplate(w, tmpl, http.StatusOK, data)
 }
 
+// isSafeBackURL returns true if raw is a relative same-origin path safe for redirection/navigation.
+// It explicitly blocks open redirects such as //evil.example or /\evil.example, as well as /posts/ loops.
+func isSafeBackURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return false
+	}
+	if strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
+		return false
+	}
+	if strings.HasPrefix(raw, "/posts/") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "" && u.Host == ""
+}
+
 func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	idStr := chi.URLParam(r, "id")
@@ -894,11 +923,11 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backURL := "/"
-	if qBack := r.URL.Query().Get("back"); qBack != "" && strings.HasPrefix(qBack, "/") && !strings.HasPrefix(qBack, "/posts/") {
+	if qBack := r.URL.Query().Get("back"); isSafeBackURL(qBack) {
 		backURL = qBack
 	} else if ref := r.Header.Get("Referer"); ref != "" {
 		if u, err := url.Parse(ref); err == nil && (u.Host == "" || u.Host == r.Host) {
-			if uri := u.RequestURI(); uri != "" && !strings.HasPrefix(u.Path, "/posts/") {
+			if uri := u.RequestURI(); isSafeBackURL(uri) {
 				backURL = uri
 			}
 		}
@@ -960,6 +989,11 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	robotsMeta := "index, follow"
+	if r.URL.RawQuery != "" {
+		robotsMeta = "noindex, follow"
+	}
+
 	data := postPageData{
 		Title:           fmt.Sprintf("Post #%d — Hypnogaze", post.ID),
 		Post:            *post,
@@ -970,7 +1004,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		GroupPageIndex:  groupPageIndex,
 		PrevGroupPostID: prevGroupID,
 		NextGroupPostID: nextGroupID,
-		RobotsMeta:      "index, follow",
+		RobotsMeta:      robotsMeta,
 		OpenGraph:       postOG,
 	}
 

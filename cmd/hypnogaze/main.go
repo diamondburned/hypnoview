@@ -13,7 +13,6 @@ import (
 	"gaze.d14.pet"
 	"gaze.d14.pet/httputil"
 	"gaze.d14.pet/internal/index"
-	"gaze.d14.pet/internal/server/api"
 	"gaze.d14.pet/internal/server/web"
 	"github.com/go-chi/httplog/v2"
 	"github.com/lmittmann/tint"
@@ -117,12 +116,7 @@ func main() {
 		}()
 	}
 
-	apiServer := api.NewServer(store)
 	webServer := web.NewServer(store, logger.With("component", "web"), opts.devMode)
-
-	rootMux := http.NewServeMux()
-	rootMux.Handle("/api/", apiServer)
-	rootMux.Handle("/", webServer)
 
 	reqLogger := httplog.NewLogger("http", httplog.Options{
 		LogLevel: logLevel,
@@ -135,7 +129,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              opts.listenAddr,
-		Handler:           httplog.Handler(reqLogger)(rootMux),
+		Handler:           httplog.Handler(reqLogger)(webServer),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

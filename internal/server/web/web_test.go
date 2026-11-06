@@ -468,3 +468,92 @@ func TestWebAPICORS(t *testing.T) {
 		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
 	}
 }
+
+func TestSafeBackURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		safe bool
+	}{
+		{"", false},
+		{"//evil.example/x", false},
+		{"/\\evil.example", false},
+		{"https://evil.example", false},
+		{"javascript:alert(1)", false},
+		{"/posts/100", false},
+		{"/posts/100?back=%2F", false},
+		{"/", true},
+		{"/popular", true},
+		{"/?window=7d&sort=hot", true},
+		{"/popular?rating=safe", true},
+	}
+
+	for _, tc := range cases {
+		if got := isSafeBackURL(tc.url); got != tc.safe {
+			t.Errorf("isSafeBackURL(%q) = %v, want %v", tc.url, got, tc.safe)
+		}
+	}
+}
+
+func TestBackURLAndRobotsMeta(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:        1,
+			Score:     10,
+			Rating:    hypnohub.RatingSafe,
+			Tags:      "test",
+			Width:     800,
+			Height:    600,
+			FileURL:   "https://example.com/1.jpg",
+			SampleURL: "https://example.com/1.jpg",
+			CreatedAt: hypnohub.Date(now),
+			Status:    "active",
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	srv := New(store, nil)
+
+	// 1. Safe back URL is preserved in ← Back to Feed link
+	req := httptest.NewRequest(http.MethodGet, "/posts/1?back=%2Fpopular%3Fwindow%3D7d", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/popular?window=7d"`) {
+		t.Errorf("expected back link /popular?window=7d, got body: %s", body)
+	}
+	// And with query params, robots is noindex, follow
+	if !strings.Contains(body, `<meta name="robots" content="noindex, follow" />`) {
+		t.Errorf("expected noindex, follow on post detail with query param, got: %s", body)
+	}
+
+	// 2. Open redirect attempts fall back to href="/"
+	req = httptest.NewRequest(http.MethodGet, "/posts/1?back=%2F%2Fevil.example%2Fexploit", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if strings.Contains(body, "evil.example") {
+		t.Errorf("expected open redirect payload to be rejected, got: %s", body)
+	}
+	if !strings.Contains(body, `href="/"`) {
+		t.Errorf("expected fallback href=\"/\", got: %s", body)
+	}
+
+	// 3. /?rating=all preserves rating=all in the search form
+	req = httptest.NewRequest(http.MethodGet, "/?rating=all", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if !strings.Contains(body, `<input type="hidden" name="rating" value="all" />`) {
+		t.Errorf("expected hidden input rating=all in search form, got: %s", body)
+	}
+}

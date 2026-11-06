@@ -6,6 +6,7 @@
 	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b10" />
 	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f9" />
 	<meta name="referrer" content="same-origin" />
+	<meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true}' />
 	{{- if .RobotsMeta }}
 	<meta name="robots" content="{{ .RobotsMeta }}" />
 	{{- end }}
@@ -72,7 +73,8 @@
 	<link rel="stylesheet" href="/static/style.css" />
 	<noscript>
 		<style>
-			#detail-hd-toggle, #detail-zoom-toggle, #lightbox {
+			#detail-hd-toggle, #detail-zoom-toggle, #lightbox,
+			#view-mode-toggle, #settings-toggle, #blocked-tags-btn {
 				display: none !important;
 			}
 		</style>
@@ -197,7 +199,7 @@
 							<label for="setting-max-cols" class="setting-label">Max Columns</label>
 							<span id="setting-max-cols-val" class="setting-badge">5 cols</span>
 						</div>
-						<input type="range" id="setting-max-cols" min="1" max="8" step="1" value="5" class="setting-range" />
+						<input type="range" id="setting-max-cols" min="1" max="10" step="1" value="5" class="setting-range" />
 					</div>
 
 					<div class="setting-group">
@@ -205,13 +207,21 @@
 							<label for="setting-min-width" class="setting-label">Min Column Width</label>
 							<span id="setting-min-width-val" class="setting-badge">210px</span>
 						</div>
-						<input type="range" id="setting-min-width" min="150" max="380" step="10" value="210" class="setting-range" />
+						<input type="range" id="setting-min-width" min="150" max="420" step="10" value="210" class="setting-range" />
 					</div>
 				</section>
 
 				<!-- Section 2: Feed Defaults -->
 				<section class="settings-section">
 					<h3 class="settings-section-title">Feed Defaults</h3>
+
+					<div class="setting-group">
+						<label class="setting-label">Default Browse Sort</label>
+						<div class="segmented-control" role="radiogroup" aria-label="Default browse sort" id="setting-sort-browse">
+							<button type="button" class="segmented-btn" data-value="new" role="radio">Newest</button>
+							<button type="button" class="segmented-btn" data-value="score" role="radio">Top Score</button>
+						</div>
+					</div>
 
 					<div class="setting-group">
 						<label class="setting-label">Default Popular Window</label>

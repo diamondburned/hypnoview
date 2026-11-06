@@ -17,7 +17,7 @@ import (
 	"gaze.d14.pet"
 	"gaze.d14.pet/internal/index/sqlcgen"
 	"libdb.so/lazymigrate"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -27,11 +27,38 @@ const initPragma = `
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 10000;
+PRAGMA busy_timeout = 5000;
 PRAGMA cache_size = -64000;
 PRAGMA temp_store = MEMORY;
 PRAGMA mmap_size = 268435456;
 `
+
+var errIntegrityCheckFailed = errors.New("sqlite integrity check failed")
+
+// isCorruptError returns true only when the error represents a genuine unrecoverable
+// corruption of the SQLite database disk image, not transient lock or context errors.
+func isCorruptError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errIntegrityCheckFailed) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code()
+		// SQLITE_CORRUPT (11) or SQLITE_NOTADB (26)
+		if code == 11 || code == 26 || (code&0xff) == 11 || (code&0xff) == 26 {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "file is not a database") ||
+		strings.Contains(msg, "database disk image is malformed") ||
+		strings.Contains(msg, "file is encrypted or is not a database") ||
+		strings.Contains(msg, "sqlite integrity check failed") ||
+		strings.Contains(msg, "corrupt")
+}
 
 var (
 	// ErrNotFound is returned when a requested post does not exist in the index.
@@ -125,7 +152,7 @@ func (w Window) DampingHours() float64 {
 type SortMode string
 
 const (
-	// SortHot ranks posts by damped upvote velocity (score_delta / (eff_hours + tau)^gravity).
+	// SortHot ranks posts by Superlinear Momentum: (score_delta / (eff_hours + tau)) * max(1, score)^0.35.
 	SortHot SortMode = "hot"
 	// SortTop ranks posts by total score gained within the sliding window (score_delta).
 	SortTop SortMode = "top"
@@ -158,27 +185,37 @@ type Store struct {
 }
 
 // Open opens or creates a SQLite index database at the given file path (or ":memory:").
-// If an existing database file on disk is corrupted or unreadable, it is backed up to .bak
-// and a clean new database is initialized in its place.
+// If an existing database file on disk is genuinely corrupted, it is backed up to .bak
+// (preserving any prior .bak) and a clean new database is initialized in its place.
+// Transient context cancellations or deadline errors are returned directly without touching disk.
 func Open(ctx context.Context, path string) (*Store, error) {
 	isMem := path == ":memory:" || strings.HasPrefix(path, "file::memory:") || strings.Contains(path, "mode=memory")
 	store, err := openStore(ctx, path, isMem)
 	if err == nil {
 		return store, nil
 	}
-	if isMem {
+	if isMem || ctx.Err() != nil || !isCorruptError(err) {
 		return nil, err
 	}
 
-	// Check if an existing file on disk failed to open/migrate/read
+	// Check if an existing file on disk failed to open/migrate/read due to genuine corruption
 	if fi, statErr := os.Stat(path); statErr == nil && !fi.IsDir() {
 		backupPath := path + ".bak"
-		slog.Warn("database file is unreadable or corrupted; moving to .bak and recreating",
+		if _, err := os.Stat(backupPath); err == nil {
+			oldBakPath := fmt.Sprintf("%s.%d.bak", path, time.Now().UnixNano())
+			if err := os.Rename(backupPath, oldBakPath); err != nil {
+				return nil, fmt.Errorf("preserving existing backup file: %w", err)
+			}
+		}
+
+		slog.Warn("database file is corrupted; moving to .bak and recreating",
 			"path", path,
 			"backup", backupPath,
 			"err", err)
 
-		_ = os.Rename(path, backupPath)
+		if err := os.Rename(path, backupPath); err != nil {
+			return nil, fmt.Errorf("backing up corrupt database: %w", err)
+		}
 		_ = os.Remove(path + "-wal")
 		_ = os.Remove(path + "-shm")
 
@@ -192,7 +229,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
 	dsn := path
 	var pragmas []string
-	pragmas = append(pragmas, "_pragma=foreign_keys(1)", "_pragma=synchronous(NORMAL)", "_pragma=busy_timeout(10000)")
+	pragmas = append(pragmas,
+		"_pragma=busy_timeout(5000)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=foreign_keys(ON)",
+		"_pragma=cache_size(-64000)",
+		"_pragma=temp_store(MEMORY)",
+	)
 	if !isMem {
 		pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
 	}
@@ -218,7 +261,7 @@ func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
 		execPragmas = `
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 10000;
+PRAGMA busy_timeout = 5000;
 PRAGMA cache_size = -64000;
 PRAGMA temp_store = MEMORY;
 `
@@ -234,13 +277,27 @@ PRAGMA temp_store = MEMORY;
 		return nil, fmt.Errorf("migrating sqlite schema: %w", err)
 	}
 
+	var schemaVer int
+	if err := db.QueryRowContext(ctx, "PRAGMA schema_version;").Scan(&schemaVer); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reading schema version: %w", err)
+	}
+
+	var schemaCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema;").Scan(&schemaCount); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reading sqlite_schema: %w", err)
+	}
+
 	var checkResult string
-	if err := db.QueryRowContext(ctx, "PRAGMA quick_check;").Scan(&checkResult); err != nil || checkResult != "ok" {
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check(1);").Scan(&checkResult); err != nil || checkResult != "ok" {
 		_ = db.Close()
 		if err == nil {
-			err = fmt.Errorf("quick_check failed: %s", checkResult)
+			err = fmt.Errorf("%w: %s", errIntegrityCheckFailed, checkResult)
+		} else {
+			err = fmt.Errorf("%w: %v", errIntegrityCheckFailed, err)
 		}
-		return nil, fmt.Errorf("verifying database integrity: %w", err)
+		return nil, err
 	}
 
 	var count int
@@ -372,15 +429,53 @@ func (s *Store) IngestBatch(
 	affectedGroupIDs := make(map[int64]struct{}, 128)
 	upserted := 0
 
+	// Pre-query previous parent_id and group_id for all incoming posts so we detect
+	// parent detachment or status changes and recompute both old and new groups.
+	prevPostMap := make(map[int64]struct{ parentID, groupID int64 }, len(posts))
+	var batchIDs []int64
+	for _, p := range posts {
+		if p.ID.IsValid() {
+			batchIDs = append(batchIDs, int64(p.ID))
+		}
+	}
+	for i := 0; i < len(batchIDs); i += 500 {
+		end := min(len(batchIDs), i+500)
+		chunk := batchIDs[i:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		q := fmt.Sprintf("SELECT id, parent_id, group_id FROM posts WHERE id IN (%s)", placeholders)
+		args := make([]any, len(chunk))
+		for idx, id := range chunk {
+			args[idx] = id
+		}
+		rows, err := tx.QueryContext(ctx, q, args...)
+		if err == nil {
+			for rows.Next() {
+				var id, pid, gid int64
+				if err := rows.Scan(&id, &pid, &gid); err == nil {
+					prevPostMap[id] = struct{ parentID, groupID int64 }{parentID: pid, groupID: gid}
+				}
+			}
+			rows.Close()
+		}
+	}
+
 	for _, p := range posts {
 		if !p.ID.IsValid() {
 			continue
 		}
 
-		if p.ParentID > 0 || p.HasChildren {
+		prev := prevPostMap[int64(p.ID)]
+		if p.ParentID > 0 || p.HasChildren || prev.parentID > 0 || prev.groupID > 0 {
 			affectedGroupIDs[int64(p.ID)] = struct{}{}
 			if p.ParentID > 0 {
 				affectedGroupIDs[int64(p.ParentID)] = struct{}{}
+			}
+			if prev.parentID > 0 {
+				affectedGroupIDs[prev.parentID] = struct{}{}
+			}
+			if prev.groupID > 0 {
+				affectedGroupIDs[prev.groupID] = struct{}{}
 			}
 		}
 
@@ -597,121 +692,39 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 		}
 	}
 
-	// Also check pool_posts for any of the seen nodes:
-	if len(seen) > 0 {
-		seenSlice := make([]int64, 0, len(seen))
-		for id := range seen {
-			seenSlice = append(seenSlice, id)
-		}
-		for i := 0; i < len(seenSlice); i += 500 {
-			end := min(len(seenSlice), i+500)
-			chunk := seenSlice[i:end]
-			placeholders := strings.Repeat("?,", len(chunk))
-			placeholders = placeholders[:len(placeholders)-1]
-
-			query := fmt.Sprintf(`
-				SELECT pp2.post_id
-				FROM pool_posts pp1
-				JOIN pool_posts pp2 ON pp1.pool_id = pp2.pool_id
-				WHERE pp1.post_id IN (%s)
-			`, placeholders)
-
-			args := make([]any, len(chunk))
-			for idx, id := range chunk {
-				args[idx] = id
-			}
-
-			rows, err := tx.QueryContext(ctx, query, args...)
-			if err == nil {
-				var poolPostIDs []int64
-				for rows.Next() {
-					var pid int64
-					if err := rows.Scan(&pid); err == nil && !seen[pid] {
-						seen[pid] = true
-						poolPostIDs = append(poolPostIDs, pid)
-					}
-				}
-				rows.Close()
-
-				if len(poolPostIDs) > 0 {
-					pPlaceholders := strings.Repeat("?,", len(poolPostIDs))
-					pPlaceholders = pPlaceholders[:len(pPlaceholders)-1]
-					pQuery := fmt.Sprintf(`SELECT id, parent_id, group_id, status FROM posts WHERE id IN (%s)`, pPlaceholders)
-					pArgs := make([]any, len(poolPostIDs))
-					for idx, id := range poolPostIDs {
-						pArgs[idx] = id
-					}
-					pRows, err := tx.QueryContext(ctx, pQuery, pArgs...)
-					if err == nil {
-						for pRows.Next() {
-							var n postNode
-							if err := pRows.Scan(&n.id, &n.parentID, &n.groupID, &n.status); err == nil {
-								allNodes[n.id] = n
-							}
-						}
-						pRows.Close()
-					}
-				}
-			}
-		}
-	}
-
-	// Build adjacency graph (undirected) among allNodes
+	// Build undirected adjacency graph. Active posts link to parent_id if parent is active or unindexed.
 	adj := make(map[int64][]int64, len(allNodes))
 	for id, n := range allNodes {
-		if n.parentID > 0 && n.parentID != id {
-			if _, exists := allNodes[n.parentID]; exists {
+		if n.status == "active" && n.parentID > 0 && n.parentID != id {
+			parent, inNodes := allNodes[n.parentID]
+			if !inNodes || parent.status == "active" {
 				adj[id] = append(adj[id], n.parentID)
 				adj[n.parentID] = append(adj[n.parentID], id)
 			}
 		}
 	}
 
-	// Query pool_posts connections for allNodes
-	if len(allNodes) > 0 {
-		nodeIDs := make([]int64, 0, len(allNodes))
-		for id := range allNodes {
-			nodeIDs = append(nodeIDs, id)
-		}
-		for i := 0; i < len(nodeIDs); i += 500 {
-			end := min(len(nodeIDs), i+500)
-			chunk := nodeIDs[i:end]
-			placeholders := strings.Repeat("?,", len(chunk))
-			placeholders = placeholders[:len(placeholders)-1]
+	qtx := sqlcgen.New(tx)
 
-			query := fmt.Sprintf(`SELECT pool_id, post_id FROM pool_posts WHERE post_id IN (%s)`, placeholders)
-			args := make([]any, len(chunk))
-			for idx, id := range chunk {
-				args[idx] = id
-			}
-			rows, err := tx.QueryContext(ctx, query, args...)
-			if err == nil {
-				poolMap := make(map[int64][]int64)
-				for rows.Next() {
-					var poolID, postID int64
-					if err := rows.Scan(&poolID, &postID); err == nil {
-						poolMap[poolID] = append(poolMap[poolID], postID)
-					}
-				}
-				rows.Close()
-				for _, pids := range poolMap {
-					for a := 0; a < len(pids); a++ {
-						for b := a + 1; b < len(pids); b++ {
-							adj[pids[a]] = append(adj[pids[a]], pids[b])
-							adj[pids[b]] = append(adj[pids[b]], pids[a])
-						}
-					}
-				}
+	// Reset any non-active posts in allNodes to group_id = 0, group_page_count = 1, group_is_latest = 0
+	for id, n := range allNodes {
+		if n.status != "active" {
+			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
+				GroupID:        0,
+				GroupPageCount: 1,
+				GroupIsLatest:  0,
+				ID:             id,
+			}); err != nil {
+				return fmt.Errorf("resetting inactive post group %d: %w", id, err)
 			}
 		}
 	}
 
-	// Find connected components using BFS
+	// Find connected components among active posts using BFS
 	visitedComp := make(map[int64]bool, len(allNodes))
-	qtx := sqlcgen.New(tx)
 
-	for id := range allNodes {
-		if visitedComp[id] {
+	for id, n := range allNodes {
+		if n.status != "active" || visitedComp[id] {
 			continue
 		}
 
@@ -732,37 +745,34 @@ func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error
 			}
 		}
 
-		slices.Sort(comp)
+		// Filter connected component to active posts that exist in allNodes
+		var activeComp []int64
+		for _, pid := range comp {
+			if node, ok := allNodes[pid]; ok && node.status == "active" {
+				activeComp = append(activeComp, pid)
+			}
+		}
+		slices.Sort(activeComp)
 
-		if len(comp) <= 1 {
-			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
-				GroupID:        0,
-				GroupPageCount: 1,
-				GroupIsLatest:  1,
-				ID:             id,
-			}); err != nil {
-				return fmt.Errorf("resetting single post group %d: %w", id, err)
+		if len(activeComp) <= 1 {
+			for _, pid := range activeComp {
+				if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
+					GroupID:        0,
+					GroupPageCount: 1,
+					GroupIsLatest:  1,
+					ID:             pid,
+				}); err != nil {
+					return fmt.Errorf("resetting single post group %d: %w", pid, err)
+				}
 			}
 			continue
 		}
 
-		groupID := comp[0]
-		pageCount := int64(len(comp))
+		groupID := activeComp[0]
+		pageCount := int64(len(activeComp))
+		latestID := activeComp[len(activeComp)-1]
 
-		var latestID int64
-		for _, pid := range comp {
-			node := allNodes[pid]
-			if node.status == "active" {
-				if pid > latestID {
-					latestID = pid
-				}
-			}
-		}
-		if latestID == 0 {
-			latestID = comp[len(comp)-1]
-		}
-
-		for _, pid := range comp {
+		for _, pid := range activeComp {
 			isLatest := int64(0)
 			if pid == latestID {
 				isLatest = 1
@@ -862,10 +872,11 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 
 	includeTags := cleanTagList(opts.IncludeTags)
 	excludeTags := cleanTagList(opts.ExcludeTags)
+	hasFilters := len(includeTags) > 0 || len(excludeTags) > 0 || ratingStr != ""
 
-	// Fast path: When no tag filters are requested, execute 100% type-safe sqlc queries
-	// without any dynamic string concatenation or overhead.
-	if len(includeTags) == 0 && len(excludeTags) == 0 {
+	// Fast path: When no tag filters are requested and not filtering by rating while collapsing groups,
+	// execute 100% type-safe sqlc queries without any dynamic string concatenation or overhead.
+	if len(includeTags) == 0 && len(excludeTags) == 0 && (!opts.CollapseGroups || ratingStr == "") {
 		if winDur == 0 {
 			// All-time window: No score_snapshots join required!
 			total, err := s.q.CountPostsAll(ctx, sqlcgen.CountPostsAllParams{
@@ -1063,13 +1074,14 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		}, nil
 	}
 
-	// Dynamic path: Required when includeTags or excludeTags are present.
+	// Dynamic path: Required when includeTags or excludeTags are present, or when collapsing groups with rating/tags.
 	var (
 		whereClauses = []string{"p.status = 'active'"}
 		whereArgs    []any
 	)
 
-	if opts.CollapseGroups {
+	dynamicCollapse := opts.CollapseGroups && hasFilters
+	if opts.CollapseGroups && !hasFilters {
 		whereClauses = append(whereClauses, "p.group_is_latest = 1")
 	}
 
@@ -1127,30 +1139,73 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 	if winDur == 0 {
 		// All-time window with tag filters: Fast path avoiding score_snapshots join!
 		var total int
-		countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM posts p WHERE %s`, whereSQL)
+		var countQuery, querySQL string
+
+		if dynamicCollapse {
+			countQuery = fmt.Sprintf(`
+				WITH matched AS (
+					SELECT p.id, p.group_id
+					FROM posts p
+					WHERE %s
+				)
+				SELECT COUNT(*) FROM (
+					SELECT 1 FROM matched
+					GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
+				)
+			`, whereSQL)
+
+			querySQL = fmt.Sprintf(`
+				WITH matched AS (
+					SELECT
+						p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
+						p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
+						p.file_url, p.file_ext, p.width, p.height,
+						p.sample_url, p.sample_width, p.sample_height,
+						p.preview_url, p.preview_width, p.preview_height,
+						p.tags_raw, p.first_seen_at, p.last_polled_at,
+						p.group_id, p.group_is_latest, p.group_page_count,
+						0 AS baseline_score,
+						p.score AS score_delta,
+						MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
+						CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?) AS score_rate,
+						(CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
+					FROM posts p
+					WHERE %s
+				)
+				SELECT * FROM matched p
+				WHERE p.id IN (
+					SELECT MAX(id) FROM matched
+					GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
+				)
+				ORDER BY %s
+				LIMIT ? OFFSET ?
+			`, whereSQL, orderBySQL)
+		} else {
+			countQuery = fmt.Sprintf(`SELECT COUNT(*) FROM posts p WHERE %s`, whereSQL)
+			querySQL = fmt.Sprintf(`
+				SELECT
+					p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
+					p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
+					p.file_url, p.file_ext, p.width, p.height,
+					p.sample_url, p.sample_width, p.sample_height,
+					p.preview_url, p.preview_width, p.preview_height,
+					p.tags_raw, p.first_seen_at, p.last_polled_at,
+					p.group_id, p.group_is_latest, p.group_page_count,
+					0 AS baseline_score,
+					p.score AS score_delta,
+					MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
+					CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?) AS score_rate,
+					(CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
+				FROM posts p
+				WHERE %s
+				ORDER BY %s
+				LIMIT ? OFFSET ?
+			`, whereSQL, orderBySQL)
+		}
+
 		if err := s.db.QueryRowContext(ctx, countQuery, whereArgs...).Scan(&total); err != nil {
 			return nil, fmt.Errorf("counting posts: %w", err)
 		}
-
-		querySQL := fmt.Sprintf(`
-			SELECT
-				p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-				p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-				p.file_url, p.file_ext, p.width, p.height,
-				p.sample_url, p.sample_width, p.sample_height,
-				p.preview_url, p.preview_width, p.preview_height,
-				p.tags_raw, p.first_seen_at, p.last_polled_at,
-				p.group_id, p.group_is_latest, p.group_page_count,
-				0 AS baseline_score,
-				p.score AS score_delta,
-				MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
-				CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?) AS score_rate,
-				(CAST(p.score AS REAL) / (MAX(0.1, (? - p.created_at) / 3600.0) + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-			FROM posts p
-			WHERE %s
-			ORDER BY %s
-			LIMIT ? OFFSET ?
-		`, whereSQL, orderBySQL)
 
 		args := make([]any, 0, 5+len(whereArgs)+2)
 		args = append(args,
@@ -1204,53 +1259,111 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		)
 	`
 
-	var total int
-	countQuery := fmt.Sprintf(`%s SELECT COUNT(*) FROM posts p LEFT JOIN baseline b ON b.post_id = p.id WHERE %s`, baselineCTE, whereSQL)
-	countArgs := make([]any, 0, 2+len(whereArgs))
-	countArgs = append(countArgs, windowStartUnix, nowUnix)
-	countArgs = append(countArgs, whereArgs...)
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
-		return nil, fmt.Errorf("counting posts: %w", err)
-	}
-
 	const (
 		baselineExpr = `CASE WHEN p.created_at >= ? THEN 0 ELSE COALESCE(b.start_score, p.score) END`
 		deltaExpr    = `CASE WHEN p.created_at >= ? THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END`
 		effHoursExpr = `MAX(0.1, (? - CASE WHEN p.created_at >= ? THEN p.created_at ELSE COALESCE(b.start_time, ?) END) / 3600.0)`
 	)
 
-	querySQL := fmt.Sprintf(`
-		%s
-		SELECT
-			p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
-			p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
-			p.file_url, p.file_ext, p.width, p.height,
-			p.sample_url, p.sample_width, p.sample_height,
-			p.preview_url, p.preview_width, p.preview_height,
-			p.tags_raw, p.first_seen_at, p.last_polled_at,
-			p.group_id, p.group_is_latest, p.group_page_count,
-			%s AS baseline_score,
-			%s AS score_delta,
-			%s AS window_hours,
-			CAST(%s AS REAL) / (%s + ?) AS score_rate,
-			(CAST(%s AS REAL) / (%s + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
-		FROM posts p
-		LEFT JOIN baseline b ON b.post_id = p.id
-		WHERE %s
-		ORDER BY %s
-		LIMIT ? OFFSET ?
-	`,
-		baselineCTE,
-		baselineExpr,
-		deltaExpr,
-		effHoursExpr,
-		deltaExpr,
-		effHoursExpr,
-		deltaExpr,
-		effHoursExpr,
-		whereSQL,
-		orderBySQL,
-	)
+	var total int
+	var countQuery, querySQL string
+
+	if dynamicCollapse {
+		countQuery = fmt.Sprintf(`
+			%s,
+			matched AS (
+				SELECT p.id, p.group_id
+				FROM posts p
+				LEFT JOIN baseline b ON b.post_id = p.id
+				WHERE %s
+			)
+			SELECT COUNT(*) FROM (
+				SELECT 1 FROM matched
+				GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
+			)
+		`, baselineCTE, whereSQL)
+
+		querySQL = fmt.Sprintf(`
+			%s,
+			matched AS (
+				SELECT
+					p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
+					p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
+					p.file_url, p.file_ext, p.width, p.height,
+					p.sample_url, p.sample_width, p.sample_height,
+					p.preview_url, p.preview_width, p.preview_height,
+					p.tags_raw, p.first_seen_at, p.last_polled_at,
+					p.group_id, p.group_is_latest, p.group_page_count,
+					%s AS baseline_score,
+					%s AS score_delta,
+					%s AS window_hours,
+					CAST(%s AS REAL) / (%s + ?) AS score_rate,
+					(CAST(%s AS REAL) / (%s + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
+				FROM posts p
+				LEFT JOIN baseline b ON b.post_id = p.id
+				WHERE %s
+			)
+			SELECT * FROM matched p
+			WHERE p.id IN (
+				SELECT MAX(id) FROM matched
+				GROUP BY CASE WHEN group_id > 0 THEN group_id ELSE id END
+			)
+			ORDER BY %s
+			LIMIT ? OFFSET ?
+		`,
+			baselineCTE,
+			baselineExpr,
+			deltaExpr,
+			effHoursExpr,
+			deltaExpr,
+			effHoursExpr,
+			deltaExpr,
+			effHoursExpr,
+			whereSQL,
+			orderBySQL,
+		)
+	} else {
+		countQuery = fmt.Sprintf(`%s SELECT COUNT(*) FROM posts p LEFT JOIN baseline b ON b.post_id = p.id WHERE %s`, baselineCTE, whereSQL)
+		querySQL = fmt.Sprintf(`
+			%s
+			SELECT
+				p.id, p.created_at, p.changed_at, p.score, p.rating, p.creator_id, p.parent_id,
+				p.md5, p.source, p.status, p.has_notes, p.has_comments, p.has_children,
+				p.file_url, p.file_ext, p.width, p.height,
+				p.sample_url, p.sample_width, p.sample_height,
+				p.preview_url, p.preview_width, p.preview_height,
+				p.tags_raw, p.first_seen_at, p.last_polled_at,
+				p.group_id, p.group_is_latest, p.group_page_count,
+				%s AS baseline_score,
+				%s AS score_delta,
+				%s AS window_hours,
+				CAST(%s AS REAL) / (%s + ?) AS score_rate,
+				(CAST(%s AS REAL) / (%s + ?)) * POWER(MAX(1, p.score), 0.35) AS hot_score
+			FROM posts p
+			LEFT JOIN baseline b ON b.post_id = p.id
+			WHERE %s
+			ORDER BY %s
+			LIMIT ? OFFSET ?
+		`,
+			baselineCTE,
+			baselineExpr,
+			deltaExpr,
+			effHoursExpr,
+			deltaExpr,
+			effHoursExpr,
+			deltaExpr,
+			effHoursExpr,
+			whereSQL,
+			orderBySQL,
+		)
+	}
+
+	countArgs := make([]any, 0, 2+len(whereArgs))
+	countArgs = append(countArgs, windowStartUnix, nowUnix)
+	countArgs = append(countArgs, whereArgs...)
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("counting posts: %w", err)
+	}
 
 	args := make([]any, 0, 18+len(whereArgs))
 	args = append(args,
@@ -1315,6 +1428,49 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 	}
 
 	post := postToIndexed(postRow, nowUnix, tau)
+
+	// Compute HotScore using the 24h window (Window24h, matching /popular)
+	windowStartUnix := nowUnix - int64(24*time.Hour/time.Second)
+	if postRow.CreatedAt >= windowStartUnix {
+		// Created within the 24h window: full score is delta
+		effHours := max(0.1, float64(nowUnix-postRow.CreatedAt)/3600.0)
+		scoreRate := float64(postRow.Score) / (effHours + tau)
+		hotScore := scoreRate * math.Pow(float64(max(1, postRow.Score)), 0.35)
+		post.BaselineScore = 0
+		post.ScoreDelta = int(postRow.Score)
+		post.WindowHours = math.Round(effHours*100) / 100
+		post.ScoreRate = math.Round(scoreRate*1000) / 1000
+		post.HotScore = math.Round(hotScore*1000) / 1000
+	} else {
+		// Created before 24h window: look up baseline snapshot in window
+		var startScore int64 = -1
+		var startTime int64
+		for _, snap := range snapRows {
+			if snap.PollTime >= windowStartUnix && snap.PollTime < nowUnix {
+				startScore = snap.Score
+				startTime = snap.PollTime
+				break
+			}
+		}
+		if startScore >= 0 {
+			delta := max(0, postRow.Score-startScore)
+			effHours := max(0.1, float64(nowUnix-startTime)/3600.0)
+			scoreRate := float64(delta) / (effHours + tau)
+			hotScore := scoreRate * math.Pow(float64(max(1, postRow.Score)), 0.35)
+			post.BaselineScore = int(startScore)
+			post.ScoreDelta = int(delta)
+			post.WindowHours = math.Round(effHours*100) / 100
+			post.ScoreRate = math.Round(scoreRate*1000) / 1000
+			post.HotScore = math.Round(hotScore*1000) / 1000
+		} else {
+			// No snapshot within 24h window
+			post.BaselineScore = int(postRow.Score)
+			post.ScoreDelta = 0
+			post.WindowHours = 24.0
+			post.ScoreRate = 0
+			post.HotScore = 0
+		}
+	}
 
 	var history []ScorePoint
 	// Include creation point (created_at, score 0) as the synthetic origin point if before first snapshot.

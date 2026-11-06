@@ -121,9 +121,15 @@ CREATE INDEX IF NOT EXISTS idx_posts_browse_collapsed_rating_new ON posts(status
 
 WITH RECURSIVE
 edges(u, v) AS (
-    SELECT id, parent_id FROM posts WHERE parent_id > 0 AND parent_id != id
+    SELECT p.id, p.parent_id FROM posts p
+    LEFT JOIN posts parent ON parent.id = p.parent_id
+    WHERE p.status = 'active' AND p.parent_id > 0 AND p.parent_id != p.id
+      AND (parent.id IS NULL OR parent.status = 'active')
     UNION
-    SELECT parent_id, id FROM posts WHERE parent_id > 0 AND parent_id != id
+    SELECT p.parent_id, p.id FROM posts p
+    LEFT JOIN posts parent ON parent.id = p.parent_id
+    WHERE p.status = 'active' AND p.parent_id > 0 AND p.parent_id != p.id
+      AND (parent.id IS NULL OR parent.status = 'active')
 ),
 cc(node, comp) AS (
     SELECT u, u FROM edges
@@ -137,6 +143,7 @@ existing_cc AS (
     SELECT p.id AS post_id, MIN(cc.comp) AS raw_comp
     FROM cc
     JOIN posts p ON p.id = cc.node
+    WHERE p.status = 'active'
     GROUP BY p.id
 ),
 comp_stats AS (
@@ -144,9 +151,8 @@ comp_stats AS (
         raw_comp,
         MIN(post_id) AS canonical_group_id,
         COUNT(*) AS page_count,
-        COALESCE(MAX(CASE WHEN p.status = 'active' THEN p.id END), MAX(p.id)) AS latest_post_id
+        MAX(post_id) AS latest_post_id
     FROM existing_cc ec
-    JOIN posts p ON p.id = ec.post_id
     GROUP BY raw_comp
     HAVING COUNT(*) > 1
 ),
@@ -163,8 +169,11 @@ UPDATE posts
 SET
     group_id         = COALESCE((SELECT r.group_id FROM resolved r WHERE r.post_id = posts.id), 0),
     group_page_count = COALESCE((SELECT r.group_page_count FROM resolved r WHERE r.post_id = posts.id), 1),
-    group_is_latest  = COALESCE((SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id), 1)
-WHERE parent_id > 0 OR has_children = 1;
+    group_is_latest  = CASE
+        WHEN posts.status != 'active' THEN 0
+        ELSE COALESCE((SELECT r.group_is_latest FROM resolved r WHERE r.post_id = posts.id), 1)
+    END
+WHERE parent_id > 0 OR has_children = 1 OR status != 'active';
 
 
 
