@@ -1131,9 +1131,33 @@ function createZoomableMediaViewer(options) {
 }
 
 let currentDetailViewer = null;
+let overlayToken = 0;
+let overlayFeedTitle = "";
+let overlayReturnFocus = null;
+
+function setSheetExpanded(expanded) {
+	const sidebar = document.getElementById("post-sidebar");
+	const handleZone = document.getElementById("sheet-handle-zone");
+	const backdrop = document.getElementById("sheet-backdrop");
+	if (sidebar) {
+		sidebar.classList.toggle("is-expanded", expanded);
+	}
+	if (backdrop) {
+		backdrop.classList.toggle("is-active", expanded);
+	}
+	if (handleZone) {
+		handleZone.setAttribute("aria-expanded", expanded ? "true" : "false");
+		const chevron = handleZone.querySelector(".sheet-chevron");
+		if (chevron) {
+			chevron.textContent = expanded ? "expand_more" : "expand_less";
+		}
+	}
+}
 
 function closePostOverlay(fromPopState = false) {
 	if (!document.body.classList.contains("has-post-overlay")) return;
+
+	overlayToken++;
 
 	if (currentDetailViewer) {
 		currentDetailViewer.destroy();
@@ -1146,6 +1170,21 @@ function closePostOverlay(fromPopState = false) {
 	}
 	document.body.classList.remove("has-post-overlay");
 
+	const mainEl = document.querySelector("main");
+	const topbarEl = document.querySelector(".topbar");
+	if (mainEl) mainEl.inert = false;
+	if (topbarEl) topbarEl.inert = false;
+
+	if (overlayFeedTitle) {
+		document.title = overlayFeedTitle;
+		overlayFeedTitle = "";
+	}
+
+	if (overlayReturnFocus) {
+		overlayReturnFocus.focus({ preventScroll: true });
+		overlayReturnFocus = null;
+	}
+
 	updateSingleColumnAutoplay();
 
 	if (!fromPopState && window.history.state?.postOverlay) {
@@ -1153,9 +1192,16 @@ function closePostOverlay(fromPopState = false) {
 	}
 }
 
-async function openPostOverlay(targetUrl, initialThumbSrc) {
+async function openPostOverlay(targetUrl, initialThumbSrc, { push = true } = {}) {
 	const slot = document.getElementById("post-overlay-slot");
 	if (!slot) return;
+
+	const token = ++overlayToken;
+
+	if (!document.body.classList.contains("has-post-overlay")) {
+		overlayFeedTitle = document.title;
+		overlayReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+	}
 
 	// Pause inline autoplay videos
 	document.querySelectorAll(".post-card .card-media-link video.inline-autoplay-video").forEach((vid) => {
@@ -1164,8 +1210,14 @@ async function openPostOverlay(targetUrl, initialThumbSrc) {
 
 	document.body.classList.add("has-post-overlay");
 
-	// Push state so back gesture / back button works
-	window.history.pushState({ postOverlay: true, url: targetUrl }, "", targetUrl);
+	const mainEl = document.querySelector("main");
+	const topbarEl = document.querySelector(".topbar");
+	if (mainEl) mainEl.inert = true;
+	if (topbarEl) topbarEl.inert = true;
+
+	if (push) {
+		window.history.pushState({ postOverlay: true, url: targetUrl }, "", targetUrl);
+	}
 
 	// Immediate subtle loading state / thumbnail if available
 	if (initialThumbSrc) {
@@ -1193,14 +1245,16 @@ async function openPostOverlay(targetUrl, initialThumbSrc) {
 	}
 
 	try {
-		const res = await fetch(targetUrl, {
-			headers: { "HX-Request": "true" }
-		});
+		const res = await fetch(targetUrl);
+		if (token !== overlayToken) return;
+
 		if (!res.ok) {
 			window.location.href = targetUrl;
 			return;
 		}
 		const html = await res.text();
+		if (token !== overlayToken) return;
+
 		const doc = new DOMParser().parseFromString(html, "text/html");
 		const detail = doc.getElementById("post-detail");
 		if (!detail) {
@@ -1208,12 +1262,19 @@ async function openPostOverlay(targetUrl, initialThumbSrc) {
 			return;
 		}
 
+		const pageTitle = doc.querySelector("title")?.textContent;
+		if (pageTitle) {
+			document.title = pageTitle;
+		}
+
 		slot.innerHTML = detail.outerHTML;
 		if (window.htmx) {
 			window.htmx.process(slot);
 		}
 		initPostDetail();
+		document.getElementById("post-close-btn")?.focus({ preventScroll: true });
 	} catch (err) {
+		if (token !== overlayToken) return;
 		console.error("Failed to load post detail:", err);
 		window.location.href = targetUrl;
 	}
@@ -1226,35 +1287,29 @@ function initBottomSheet() {
 	const stage = document.getElementById("post-stage");
 	if (!sidebar || !handleZone) return;
 
-	function setExpanded(expanded) {
-		sidebar.classList.toggle("is-expanded", expanded);
-		if (backdrop) {
-			backdrop.classList.toggle("is-active", expanded);
-		}
-		handleZone.setAttribute("aria-expanded", expanded ? "true" : "false");
-		const chevron = handleZone.querySelector(".sheet-chevron");
-		if (chevron) {
-			chevron.textContent = expanded ? "expand_more" : "expand_less";
-		}
-	}
+	let hasMoved = false;
 
 	handleZone.onclick = (e) => {
-		e.stopPropagation();
+		if (e.target.closest("a, button")) return;
+		if (hasMoved) {
+			hasMoved = false;
+			return;
+		}
 		const isExp = sidebar.classList.contains("is-expanded");
-		setExpanded(!isExp);
+		setSheetExpanded(!isExp);
 	};
 
 	if (backdrop) {
 		backdrop.onclick = (e) => {
 			e.stopPropagation();
-			setExpanded(false);
+			setSheetExpanded(false);
 		};
 	}
 
 	if (stage) {
 		stage.addEventListener("click", () => {
 			if (sidebar.classList.contains("is-expanded")) {
-				setExpanded(false);
+				setSheetExpanded(false);
 			}
 		});
 	}
@@ -1266,12 +1321,16 @@ function initBottomSheet() {
 		if (e.touches.length !== 1) return;
 		touchStartY = e.touches[0].clientY;
 		isDraggingSheet = true;
+		hasMoved = false;
 		sidebar.style.transition = "none";
 	}, { passive: true });
 
 	handleZone.addEventListener("touchmove", (e) => {
 		if (!isDraggingSheet || e.touches.length !== 1) return;
 		const dy = e.touches[0].clientY - touchStartY;
+		if (Math.abs(dy) > 5) {
+			hasMoved = true;
+		}
 		const isExp = sidebar.classList.contains("is-expanded");
 		if (isExp && dy > 0) {
 			sidebar.style.transform = `translateY(${dy}px)`;
@@ -1288,10 +1347,18 @@ function initBottomSheet() {
 		const dy = (e.changedTouches[0]?.clientY || 0) - touchStartY;
 		const isExp = sidebar.classList.contains("is-expanded");
 		if (!isExp && dy < -30) {
-			setExpanded(true);
+			setSheetExpanded(true);
 		} else if (isExp && dy > 30) {
-			setExpanded(false);
+			setSheetExpanded(false);
 		}
+	}, { passive: true });
+
+	handleZone.addEventListener("touchcancel", () => {
+		if (!isDraggingSheet) return;
+		isDraggingSheet = false;
+		hasMoved = false;
+		sidebar.style.transition = "";
+		sidebar.style.transform = "";
 	}, { passive: true });
 
 	const sheetBody = sidebar.querySelector(".sheet-body");
@@ -1309,9 +1376,13 @@ function initBottomSheet() {
 			if (bodyTouchStartY && sidebar.classList.contains("is-expanded")) {
 				const dy = (e.changedTouches[0]?.clientY || 0) - bodyTouchStartY;
 				if (dy > 60 && sheetBody.scrollTop <= 0) {
-					setExpanded(false);
+					setSheetExpanded(false);
 				}
 			}
+			bodyTouchStartY = 0;
+		}, { passive: true });
+
+		sheetBody.addEventListener("touchcancel", () => {
 			bodyTouchStartY = 0;
 		}, { passive: true });
 	}
@@ -1367,8 +1438,8 @@ function initPostDetail() {
 	const mediaWrap = postStage.querySelector(".media-wrap");
 	if (!mediaWrap) return;
 
-	const zoomToggleBtn = document.getElementById("post-zoom-btn") || document.getElementById("detail-zoom-toggle");
-	const hdToggleBtn = document.getElementById("post-hd-toggle") || document.getElementById("detail-hd-toggle");
+	const zoomToggleBtn = document.getElementById("post-zoom-btn");
+	const hdToggleBtn = document.getElementById("post-hd-toggle");
 	const d = postStage.dataset;
 
 	currentDetailViewer = createZoomableMediaViewer({
@@ -1379,15 +1450,7 @@ function initPostDetail() {
 		onOutsideClick: () => {
 			const sidebar = document.getElementById("post-sidebar");
 			if (sidebar?.classList.contains("is-expanded")) {
-				sidebar.classList.remove("is-expanded");
-				const backdrop = document.getElementById("sheet-backdrop");
-				if (backdrop) backdrop.classList.remove("is-active");
-				const handleZone = document.getElementById("sheet-handle-zone");
-				if (handleZone) {
-					handleZone.setAttribute("aria-expanded", "false");
-					const chevron = handleZone.querySelector(".sheet-chevron");
-					if (chevron) chevron.textContent = "expand_less";
-				}
+				setSheetExpanded(false);
 				return;
 			}
 			if (document.body.classList.contains("has-post-overlay")) {
@@ -1521,9 +1584,12 @@ function attachGlobalListeners() {
 		lastScrollY = scrollY;
 	}, { passive: true });
 
-	window.addEventListener("popstate", () => {
-		if (document.body.classList.contains("has-post-overlay")) {
+	window.addEventListener("popstate", (e) => {
+		const open = document.body.classList.contains("has-post-overlay");
+		if (open && !e.state?.postOverlay) {
 			closePostOverlay(true);
+		} else if (!open && e.state?.postOverlay && e.state.url) {
+			openPostOverlay(e.state.url, "", { push: false });
 		}
 		const mobileCheckbox = document.getElementById("mobile-filter-state");
 		const indexSidebar = document.getElementById("index-sidebar");
@@ -1539,15 +1605,7 @@ function attachGlobalListeners() {
 			const sidebar = document.getElementById("post-sidebar");
 			if (sidebar?.classList.contains("is-expanded")) {
 				e.preventDefault();
-				sidebar.classList.remove("is-expanded");
-				const backdrop = document.getElementById("sheet-backdrop");
-				if (backdrop) backdrop.classList.remove("is-active");
-				const handleZone = document.getElementById("sheet-handle-zone");
-				if (handleZone) {
-					handleZone.setAttribute("aria-expanded", "false");
-					const chevron = handleZone.querySelector(".sheet-chevron");
-					if (chevron) chevron.textContent = "expand_less";
-				}
+				setSheetExpanded(false);
 				return;
 			}
 
@@ -1627,12 +1685,20 @@ function attachGlobalListeners() {
 	});
 
 	document.addEventListener("htmx:afterSwap", (e) => {
-		if (e.detail?.target?.id === "post-detail" || e.detail?.target?.closest?.("#post-detail")) {
-			initPostDetail();
-			const newUrl = e.detail?.xhr?.responseURL;
-			if (document.body.classList.contains("has-post-overlay") && newUrl) {
-				window.history.replaceState({ postOverlay: true, url: newUrl }, "", newUrl);
+		const target = e.detail?.target;
+		if (target?.id === "post-detail" || target?.closest?.("#post-detail")) {
+			const detail = target.id === "post-detail" ? target : target.closest("#post-detail");
+			const stage = detail?.querySelector("#post-stage");
+			const newID = stage?.dataset?.id;
+			const newUrl = newID ? `/posts/${newID}${window.location.search}` : e.detail?.xhr?.responseURL;
+			if (newUrl) {
+				const inOverlay = document.body.classList.contains("has-post-overlay");
+				window.history.replaceState(inOverlay ? { postOverlay: true, url: newUrl } : null, "", newUrl);
 			}
+			if (newID) {
+				document.title = `Post #${newID} — Hypnogaze`;
+			}
+			initPostDetail();
 		}
 	});
 

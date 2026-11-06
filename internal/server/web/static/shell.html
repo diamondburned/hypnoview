@@ -125,7 +125,7 @@
 		function showOffline() {
 			if (titleEl) titleEl.textContent = "Server Unreachable";
 			if (msgEl) {
-				msgEl.innerHTML = 'Could not reach <span id="pwa-shell-host">' + (window.location.host || "gaze.d14.pet") + '</span>. Check your connection and try again.';
+				msgEl.textContent = "Could not reach " + (window.location.host || "gaze.d14.pet") + ". Check your connection and try again.";
 			}
 			if (loadingCard) loadingCard.hidden = true;
 			if (offlineCard) offlineCard.hidden = false;
@@ -169,10 +169,11 @@
 					showError(res.status, errText);
 					return;
 				}
+
+				const htmlText = await res.text();
 				transitioned = true;
 				window.removeEventListener("online", attemptTransition);
 
-				const htmlText = await res.text();
 				const parser = new DOMParser();
 				const doc = parser.parseFromString(htmlText, "text/html");
 

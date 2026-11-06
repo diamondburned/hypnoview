@@ -1557,8 +1557,8 @@ body.has-post-overlay .post-detail {
 		background: oklch(0.06 0.01 335);
 		border: 1px solid var(--outline-variant);
 		border-radius: var(--radius-lg);
-		height: calc(100dvh - 8.5rem);
-		min-height: 480px;
+		height: calc(100dvh - 10.5rem);
+		min-height: 22rem;
 		position: relative;
 		display: flex;
 		align-items: center;
@@ -1568,23 +1568,39 @@ body.has-post-overlay .post-detail {
 	}
 
 	body.has-post-overlay .post-media-box {
-		height: calc(100dvh - 6.5rem);
+		height: calc(100dvh - 8.5rem);
+	}
+
+	.post-media-column:has(.post-group-switcher) .post-media-box {
+		height: calc(100dvh - 13.75rem);
+	}
+
+	body.has-post-overlay .post-media-column:has(.post-group-switcher) .post-media-box {
+		height: calc(100dvh - 11.75rem);
 	}
 
 	.post-sidebar {
-		background: var(--surface-container);
-		border: 1px solid var(--outline-variant);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 4px 20px color-mix(in oklch, var(--scrim) 12%, transparent);
-		max-height: calc(100dvh - 5rem);
-		overflow-y: auto;
 		position: sticky;
 		top: 1rem;
+		background: var(--surface-container);
+		border: 1px solid var(--outline);
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow);
+		max-height: calc(100dvh - 5rem);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding: 1rem;
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-		padding: 1.25rem;
 		box-sizing: border-box;
+	}
+
+	.post-sidebar .sidebar-card {
+		background: transparent;
+		border: none;
+		padding: 0;
+		box-shadow: none;
 	}
 
 	.sheet-handle-zone,
@@ -1601,28 +1617,58 @@ body.has-post-overlay .post-detail {
 
 /* Mobile Post Detail Layout (<= 900px) */
 @media (max-width: 900px) {
-	body.has-post-overlay .post-detail {
-		padding: 0;
+	body:has(#post-detail) .topbar {
+		display: none;
 	}
 
+	body:has(#post-detail) main.container {
+		padding: 0;
+		max-width: none;
+	}
+
+	.post-detail,
+	body.has-post-overlay .post-detail {
+		height: 100dvh;
+		max-height: 100dvh;
+		padding: 0.5rem 0.5rem calc(3.75rem + env(safe-area-inset-bottom, 0px) + 0.5rem);
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		margin: 0;
+	}
+
+	.post-detail-nav,
 	body.has-post-overlay .post-detail-nav {
-		padding: 0.5rem 0.75rem;
-		margin-bottom: 0;
+		padding: 0 0.25rem;
+		margin-bottom: 0.4rem;
 	}
 
 	.post-detail-grid {
+		flex: 1 1 0%;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		position: relative;
 	}
 
-	.post-media-box {
+	.post-media-column {
+		flex: 1 1 0%;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.post-media-box,
+	body.has-post-overlay .post-media-box {
 		background: oklch(0.06 0.01 335);
-		height: calc(100dvh - 7.5rem);
-		margin-inline: calc(-1 * var(--page-gutter));
-		width: calc(100% + 2 * var(--page-gutter));
-		border-radius: 0;
-		border: none;
+		border: 1px solid var(--outline-variant);
+		border-radius: var(--radius-md);
+		flex: 1 1 0%;
+		min-height: 0;
+		height: auto;
+		margin-inline: 0;
+		width: 100%;
 		position: relative;
 		display: flex;
 		align-items: center;
@@ -1631,10 +1677,8 @@ body.has-post-overlay .post-detail {
 		cursor: pointer;
 	}
 
-	body.has-post-overlay .post-media-box {
-		height: calc(100dvh - 3.75rem - 3rem);
-		margin-inline: 0;
-		width: 100%;
+	.post-detail-actions {
+		flex-shrink: 0;
 	}
 
 	.stage-nav-btn {
@@ -1861,13 +1905,21 @@ body.has-post-overlay .post-overlay-slot {
 	position: fixed;
 	inset: 0;
 	z-index: 1000;
-	background: color-mix(in oklch, var(--surface) 88%, transparent);
-	backdrop-filter: blur(16px);
-	-webkit-backdrop-filter: blur(16px);
 	overflow-y: auto;
 	overflow-x: hidden;
 	-webkit-overflow-scrolling: touch;
 	overscroll-behavior: contain;
+}
+
+body.has-post-overlay .post-overlay-slot::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	background: color-mix(in oklch, var(--surface) 88%, transparent);
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+	pointer-events: none;
 }
 
 .media-viewer-stage {

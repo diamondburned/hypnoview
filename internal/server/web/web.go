@@ -365,7 +365,6 @@ type indexPageData struct {
 	HypnohubContinuationURL string
 	LastPostID              hypnohub.PostID
 	AllWindowURL            string
-	CurrentFeedURL          string
 	RobotsMeta              string
 	OpenGraph               OpenGraph
 }
@@ -935,7 +934,6 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode feedMod
 		HypnohubContinuationURL: continuationURL,
 		LastPostID:              minPostID,
 		AllWindowURL:            "/?window=all&sort=new",
-		CurrentFeedURL:          r.URL.RequestURI(),
 		RobotsMeta:              "index, follow",
 		OpenGraph: OpenGraph{
 			Title:       pageTitle,

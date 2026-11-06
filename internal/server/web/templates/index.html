@@ -144,7 +144,7 @@
 				data-source="{{ $p.Source }}"
 				data-tags="{{ join $p.Tags " " }}"
 			>
-				<a href="/posts/{{ $p.ID }}{{ if $.CurrentFeedURL }}?back={{ urlquery $.CurrentFeedURL }}{{ end }}" class="card-media-link" style="--post-aspect: {{ aspectRatio $p.Width $p.Height }};">
+				<a href="/posts/{{ $p.ID }}" class="card-media-link" style="--post-aspect: {{ aspectRatio $p.Width $p.Height }};">
 					<img
 						src="{{ thumbURL $p }}"
 						alt="Post #{{ $p.ID }}"
@@ -179,7 +179,7 @@
 					{{ end }}
 				</a>
 				<div class="card-footer">
-					<a href="/posts/{{ $p.ID }}{{ if $.CurrentFeedURL }}?back={{ urlquery $.CurrentFeedURL }}{{ end }}" class="card-id">#{{ $p.ID }}</a>
+					<a href="/posts/{{ $p.ID }}" class="card-id">#{{ $p.ID }}</a>
 					<div class="card-meta-group">
 						<span class="card-metric" title="Score: {{ $p.Score }}">★ {{ $p.Score }}</span>
 						{{ if eq $.ActiveNav "popular" }}

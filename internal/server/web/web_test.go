@@ -67,6 +67,7 @@ func TestWebFeeds(t *testing.T) {
 	tests := []struct {
 		name          string
 		path          string
+		headers       map[string]string
 		wantCode      int
 		wantSubstrs   []string
 		unwantSubstrs []string
@@ -81,12 +82,14 @@ func TestWebFeeds(t *testing.T) {
 				`Post #501`,
 				`Post #500`,
 				`id="post-overlay-slot"`,
-				`?back=`,
+				`href="/posts/501"`,
+				`href="/posts/500"`,
 			},
 			unwantSubstrs: []string{
 				`aria-current="page">Popular</a>`,
 				`id="lightbox"`,
 				`class="lightbox"`,
+				`?back=`,
 			},
 		},
 		{
@@ -98,12 +101,13 @@ func TestWebFeeds(t *testing.T) {
 				`action="/popular"`,
 				`Post #501`,
 				`id="post-overlay-slot"`,
-				`?back=`,
+				`href="/posts/501"`,
 			},
 			unwantSubstrs: []string{
 				`aria-current="page">Browse</a>`,
 				`id="lightbox"`,
 				`class="lightbox"`,
+				`?back=`,
 			},
 		},
 		{
@@ -125,11 +129,25 @@ func TestWebFeeds(t *testing.T) {
 				`class="lightbox"`,
 			},
 		},
+		{
+			name:     "post detail view with referer",
+			path:     "/posts/501",
+			headers:  map[string]string{"Referer": "http://example.com/popular?window=7d"},
+			wantCode: http.StatusOK,
+			wantSubstrs: []string{
+				`href="/popular?window=7d"`,
+				`← Back to Feed`,
+				`Post #501`,
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
 
