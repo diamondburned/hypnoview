@@ -721,6 +721,408 @@ if (mobileFilterToggle && indexSidebar) {
 	});
 }
 
+// Unified Zoomable Media Viewer & Lightbox Implementation
+function getRenderedMediaRect(stageEl, mediaEl, postW, postH) {
+	const stageRect = stageEl.getBoundingClientRect();
+	const sw = stageEl.clientWidth || stageRect.width;
+	const sh = stageEl.clientHeight || stageRect.height;
+	const ar = (postW && postH) ? (postW / postH) : ((mediaEl?.naturalWidth && mediaEl?.naturalHeight) ? (mediaEl.naturalWidth / mediaEl.naturalHeight) : 1);
+	let rw, rh, left, top;
+	if (sw / (sh || 1) > ar) {
+		rh = sh;
+		rw = sh * ar;
+		top = 0;
+		left = (sw - rw) / 2;
+	} else {
+		rw = sw;
+		rh = sw / ar;
+		left = 0;
+		top = (sh - rh) / 2;
+	}
+	return {
+		left: stageRect.left + left,
+		top: stageRect.top + top,
+		right: stageRect.left + left + rw,
+		bottom: stageRect.top + top + rh,
+		width: rw,
+		height: rh
+	};
+}
+
+function createZoomableMediaViewer(options) {
+	const {
+		stage,
+		mediaWrap,
+		zoomToggleBtn,
+		hdToggleBtn,
+		onOutsideClick,
+		isMediaActive = () => true
+	} = options;
+
+	let currentPost = null;
+	let currentThumbSrc = "";
+	let isZoomed = false;
+	let currentZoomScale = 1;
+	let preferHD = currentSettings.preferHD ?? true;
+
+	let isDragging = false;
+	let startX = 0, startY = 0;
+	let scrollStartX = 0, scrollStartY = 0;
+	let didDrag = false;
+	let targetW = 0, targetH = 0;
+
+	function resetZoom() {
+		isZoomed = false;
+		currentZoomScale = 1;
+		targetW = 0;
+		targetH = 0;
+		stage.classList.remove("is-zoomed", "is-dragging");
+		stage.style.removeProperty("--zoomed-w");
+		stage.style.removeProperty("--zoomed-h");
+		if (zoomToggleBtn) {
+			zoomToggleBtn.textContent = "Fit";
+			zoomToggleBtn.classList.remove("active");
+		}
+	}
+
+	function toggleZoom(clickX, clickY) {
+		if (isZoomed) {
+			resetZoom();
+			return;
+		}
+		if (!currentPost) return;
+		const ext = (currentPost.ext || "").toLowerCase();
+		if (ext === "mp4" || ext === "webm") return;
+
+		const postW = parseInt(currentPost.width, 10) || 1000;
+		const postH = parseInt(currentPost.height, 10) || 1000;
+		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
+		const r = getRenderedMediaRect(stage, activeImg, postW, postH);
+		const sw = stage.clientWidth;
+		const sh = stage.clientHeight;
+		const ar = postW / postH;
+
+		const zoomMode = currentSettings.zoomMode || "fill-width";
+		const maxWidthCap = Math.min(sw, 1000);
+
+		let computedW;
+		if (zoomMode === "original") {
+			computedW = Math.min(postW, maxWidthCap);
+			if (computedW <= r.width && maxWidthCap > r.width) {
+				computedW = maxWidthCap;
+			}
+		} else if (zoomMode === "2x") {
+			computedW = Math.min(Math.round(r.width * 2), maxWidthCap);
+		} else if (zoomMode === "3x") {
+			computedW = Math.min(Math.round(r.width * 3), maxWidthCap);
+		} else {
+			// "fill-width" default: caps width at Math.min(stageWidth, 1000)
+			computedW = maxWidthCap;
+		}
+
+		targetW = Math.min(computedW, maxWidthCap);
+		targetH = Math.round(targetW / ar);
+
+		currentZoomScale = r.width > 0 ? (targetW / r.width) : 1;
+		isZoomed = true;
+		stage.classList.add("is-zoomed");
+		stage.style.setProperty("--zoomed-w", `${targetW}px`);
+		stage.style.setProperty("--zoomed-h", `${targetH}px`);
+
+		if (zoomToggleBtn) {
+			zoomToggleBtn.textContent = `${Math.round(currentZoomScale * 100)}%`;
+			zoomToggleBtn.classList.add("active");
+		}
+
+		if (clickX !== undefined && clickY !== undefined) {
+			const u = Math.max(0, Math.min(1, (clickX - r.left) / (r.width || 1)));
+			const v = Math.max(0, Math.min(1, (clickY - r.top) / (r.height || 1)));
+			requestAnimationFrame(() => {
+				stage.scrollLeft = (u * targetW) - (clickX - stage.getBoundingClientRect().left);
+				stage.scrollTop = (v * targetH) - (clickY - stage.getBoundingClientRect().top);
+			});
+		} else {
+			requestAnimationFrame(() => {
+				stage.scrollLeft = (targetW - sw) / 2;
+				stage.scrollTop = (targetH - sh) / 2;
+			});
+		}
+	}
+
+	function onMouseDown(e) {
+		if (!isZoomed || e.button !== 0) return;
+		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a")) return;
+		isDragging = true;
+		didDrag = false;
+		startX = e.clientX;
+		startY = e.clientY;
+		scrollStartX = stage.scrollLeft;
+		scrollStartY = stage.scrollTop;
+	}
+
+	function onWindowMouseMove(e) {
+		if (!isDragging) return;
+		const dx = e.clientX - startX;
+		const dy = e.clientY - startY;
+		if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+			didDrag = true;
+			stage.classList.add("is-dragging");
+		}
+		stage.scrollLeft = scrollStartX - dx;
+		stage.scrollTop = scrollStartY - dy;
+	}
+
+	function onWindowMouseUp() {
+		if (isDragging) {
+			isDragging = false;
+			stage.classList.remove("is-dragging");
+		}
+	}
+
+	function onMouseMove(e) {
+		if (isZoomed) {
+			if (!isDragging) {
+				const rect = mediaWrap.getBoundingClientRect();
+				const inMedia = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+				stage.style.cursor = inMedia ? "zoom-out" : (onOutsideClick ? "pointer" : "zoom-out");
+			}
+			return;
+		}
+		if (!currentPost) return;
+		const ext = (currentPost.ext || "").toLowerCase();
+		if (ext === "mp4" || ext === "webm") {
+			stage.style.cursor = "default";
+			return;
+		}
+		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
+		const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
+		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+		stage.style.cursor = inImage ? "zoom-in" : (onOutsideClick ? "pointer" : "default");
+	}
+
+	function onWheel(e) {
+		if (!isMediaActive()) return;
+		if (!currentPost) return;
+		const ext = (currentPost.ext || "").toLowerCase();
+		if (ext === "mp4" || ext === "webm") return;
+
+		if (e.ctrlKey || isZoomed) {
+			e.preventDefault();
+			const delta = -e.deltaY * 0.002;
+			const postW = parseInt(currentPost.width, 10) || 1000;
+			const postH = parseInt(currentPost.height, 10) || 1000;
+			const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
+			const r = getRenderedMediaRect(stage, activeImg, postW, postH);
+			const sw = stage.clientWidth;
+			const ar = postW / postH;
+			const maxWidthCap = Math.min(sw, 1000);
+
+			const baseW = isZoomed && targetW > 0 ? (targetW / currentZoomScale) : r.width;
+			let newScale = (isZoomed ? currentZoomScale : 1) + delta;
+			if (newScale < 1.05) {
+				resetZoom();
+				return;
+			}
+			if (newScale > 5) newScale = 5;
+
+			let computedW = Math.round(baseW * newScale);
+			if (computedW > maxWidthCap) {
+				computedW = maxWidthCap;
+			}
+			const computedH = Math.round(computedW / ar);
+
+			targetW = computedW;
+			targetH = computedH;
+			currentZoomScale = newScale;
+			isZoomed = true;
+			stage.classList.add("is-zoomed");
+			stage.style.setProperty("--zoomed-w", `${targetW}px`);
+			stage.style.setProperty("--zoomed-h", `${targetH}px`);
+			if (zoomToggleBtn) {
+				zoomToggleBtn.textContent = `${Math.round(currentZoomScale * 100)}%`;
+				zoomToggleBtn.classList.add("active");
+			}
+		}
+	}
+
+	function onClick(e) {
+		if (didDrag) {
+			didDrag = false;
+			return;
+		}
+		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a") || e.target.closest("video")) {
+			return;
+		}
+
+		if (!currentPost) return;
+		const ext = (currentPost.ext || "").toLowerCase();
+		const isVideo = ext === "mp4" || ext === "webm";
+
+		if (isVideo) {
+			if (onOutsideClick) onOutsideClick();
+			return;
+		}
+
+		if (isZoomed) {
+			toggleZoom();
+			return;
+		}
+
+		const activeImg = mediaWrap.querySelector(".img-full.is-loaded") || mediaWrap.querySelector(".img-preview") || mediaWrap.querySelector("img");
+		const r = getRenderedMediaRect(stage, activeImg, parseInt(currentPost.width, 10), parseInt(currentPost.height, 10));
+		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+
+		if (inImage) {
+			toggleZoom(e.clientX, e.clientY);
+		} else if (onOutsideClick) {
+			onOutsideClick();
+		}
+	}
+
+	function loadMedia(postData, thumbSrc) {
+		currentPost = postData;
+		currentThumbSrc = thumbSrc;
+		resetZoom();
+
+		const ext = (postData.ext || "").toLowerCase();
+		mediaWrap.innerHTML = "";
+
+		if (ext === "mp4" || ext === "webm") {
+			if (zoomToggleBtn) zoomToggleBtn.style.display = "none";
+			if (hdToggleBtn) hdToggleBtn.style.display = "none";
+
+			const video = document.createElement("video");
+			video.src = postData.fileUrl;
+			const cachedThumb = thumbSrc || postData.sampleUrl || postData.previewUrl;
+			if (cachedThumb) video.poster = cachedThumb;
+			video.controls = true;
+			video.autoplay = true;
+			video.loop = true;
+			video.playsInline = true;
+			video.className = "detail-media";
+			mediaWrap.appendChild(video);
+			return;
+		}
+
+		if (zoomToggleBtn) {
+			zoomToggleBtn.style.display = "";
+			zoomToggleBtn.textContent = "Fit";
+			zoomToggleBtn.classList.remove("active");
+		}
+
+		const hasDistinctSample = postData.sampleUrl && postData.sampleUrl !== postData.fileUrl && ext !== "gif";
+		if (hdToggleBtn) {
+			hdToggleBtn.style.display = hasDistinctSample ? "" : "none";
+			hdToggleBtn.textContent = preferHD ? "HD" : "Sample";
+			hdToggleBtn.classList.toggle("active", preferHD);
+			hdToggleBtn.title = preferHD ? "Switch to Sample resolution" : "Switch to HD original resolution";
+		}
+
+		const targetURL = preferHD || ext === "gif" ? postData.fileUrl : (postData.sampleUrl || postData.fileUrl);
+		const cachedThumb = thumbSrc || postData.sampleUrl || postData.previewUrl;
+
+		const container = document.createElement("div");
+		container.className = "progressive-media-container lb-progressive-container";
+		if (postData.width && postData.height) {
+			container.style.setProperty("--media-ar", `${postData.width} / ${postData.height}`);
+		}
+
+		// 1. Base layer: cached thumbnail (instant)
+		const previewImg = document.createElement("img");
+		previewImg.className = "img-preview lb-img-preview";
+		previewImg.src = cachedThumb;
+		previewImg.alt = `Post #${postData.id}`;
+		previewImg.referrerPolicy = "no-referrer";
+		container.appendChild(previewImg);
+
+		// 2. Loading spinner
+		const loader = document.createElement("div");
+		loader.className = "media-loader lb-loader";
+		loader.setAttribute("aria-hidden", "true");
+		container.appendChild(loader);
+
+		// 3. High-res target image preloaded in background
+		const fullImg = new Image();
+		fullImg.className = "img-full lb-img-full";
+		fullImg.referrerPolicy = "no-referrer";
+		fullImg.alt = `Post #${postData.id}`;
+
+		const onReady = () => {
+			loader.remove();
+			fullImg.classList.add("is-loaded");
+			previewImg.classList.add("is-hidden");
+		};
+
+		fullImg.src = targetURL;
+		container.appendChild(fullImg);
+
+		if (fullImg.complete) {
+			onReady();
+		} else {
+			fullImg.decode?.().then(onReady).catch(() => {
+				fullImg.onload = onReady;
+			});
+			fullImg.onerror = () => {
+				loader.remove();
+			};
+		}
+
+		mediaWrap.appendChild(container);
+	}
+
+	stage.addEventListener("mousedown", onMouseDown);
+	window.addEventListener("mousemove", onWindowMouseMove);
+	window.addEventListener("mouseup", onWindowMouseUp);
+	stage.addEventListener("mousemove", onMouseMove);
+	stage.addEventListener("wheel", onWheel, { passive: false });
+	stage.addEventListener("click", onClick);
+
+	function onZoomToggleClick(e) {
+		e.stopPropagation();
+		toggleZoom();
+	}
+
+	function onHdToggleClick(e) {
+		e.stopPropagation();
+		preferHD = !preferHD;
+		currentSettings.preferHD = preferHD;
+		try {
+			localStorage.setItem("hypnogaze_settings", JSON.stringify(currentSettings));
+		} catch (_) {}
+		if (currentPost) {
+			loadMedia(currentPost, currentThumbSrc);
+		}
+	}
+
+	zoomToggleBtn?.addEventListener("click", onZoomToggleClick);
+	hdToggleBtn?.addEventListener("click", onHdToggleClick);
+
+	return {
+		setMedia(postData, thumbSrc) {
+			loadMedia(postData, thumbSrc);
+		},
+		resetZoom,
+		toggleZoom,
+		destroy() {
+			resetZoom();
+			stage.removeEventListener("mousedown", onMouseDown);
+			window.removeEventListener("mousemove", onWindowMouseMove);
+			window.removeEventListener("mouseup", onWindowMouseUp);
+			stage.removeEventListener("mousemove", onMouseMove);
+			stage.removeEventListener("wheel", onWheel);
+			stage.removeEventListener("click", onClick);
+			zoomToggleBtn?.removeEventListener("click", onZoomToggleClick);
+			hdToggleBtn?.removeEventListener("click", onHdToggleClick);
+		},
+		isZoomed: () => isZoomed,
+		getPreferHD: () => preferHD,
+		setPreferHD(val) {
+			preferHD = val;
+			if (currentPost) loadMedia(currentPost, currentThumbSrc);
+		}
+	};
+}
+
 // Lightbox implementation
 const cards = Array.from(document.querySelectorAll(".post-card"));
 const lightbox = document.getElementById("lightbox");
@@ -745,216 +1147,28 @@ if (lightbox && cards.length > 0) {
 	const lbGroupNav = document.getElementById("lb-group-nav");
 	const groupPostsCache = new Map();
 
-	let currentIndex = 0;
-	let preferHD = currentSettings.preferHD ?? true;
-	let isZoomed = false;
-	let currentZoomScale = 1;
-
-	function getRenderedMediaRect(stage, mediaEl, postW, postH) {
-		const stageRect = stage.getBoundingClientRect();
-		const sw = stageRect.width;
-		const sh = stageRect.height;
-		const ar = (postW && postH) ? (postW / postH) : ((mediaEl?.naturalWidth && mediaEl?.naturalHeight) ? (mediaEl.naturalWidth / mediaEl.naturalHeight) : 1);
-		let rw, rh, left, top;
-		if (sw / sh > ar) {
-			rh = sh;
-			rw = sh * ar;
-			top = 0;
-			left = (sw - rw) / 2;
-		} else {
-			rw = sw;
-			rh = sw / ar;
-			left = 0;
-			top = (sh - rh) / 2;
-		}
-		return {
-			left: stageRect.left + left,
-			top: stageRect.top + top,
-			right: stageRect.left + left + rw,
-			bottom: stageRect.top + top + rh,
-			width: rw,
-			height: rh
-		};
-	}
-
-	function resetZoom() {
-		isZoomed = false;
-		currentZoomScale = 1;
-		lbStage.classList.remove("is-zoomed", "is-dragging");
-		lbStage.style.removeProperty("--zoomed-w");
-		lbStage.style.removeProperty("--zoomed-h");
-		if (lbZoomToggle) {
-			lbZoomToggle.textContent = "Fit";
-			lbZoomToggle.classList.remove("active");
-		}
-	}
-
-	function toggleZoom(clickX, clickY) {
-		if (isZoomed) {
-			resetZoom();
-			return;
-		}
-		const card = cards[currentIndex];
-		if (!card) return;
-		const ext = (card.dataset.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") return;
-
-		const postW = parseInt(card.dataset.width, 10) || 1000;
-		const postH = parseInt(card.dataset.height, 10) || 1000;
-		const r = getRenderedMediaRect(lbStage, lbMediaWrap.querySelector("img"), postW, postH);
-		const sw = lbStage.clientWidth;
-		const sh = lbStage.clientHeight;
-		const ar = postW / postH;
-
-		let targetW, targetH;
-		const zoomMode = currentSettings.zoomMode || "fill-width";
-
-		if (zoomMode === "original") {
-			targetW = postW;
-			if (postW <= r.width) targetW = Math.round(r.width * 2);
-			targetH = Math.round(targetW / ar);
-		} else if (zoomMode === "2x") {
-			targetW = Math.round(r.width * 2);
-			targetH = Math.round(r.height * 2);
-		} else if (zoomMode === "3x") {
-			targetW = Math.round(r.width * 3);
-			targetH = Math.round(r.height * 3);
-		} else {
-			// "fill-width" default: fills stage width (or at least 1.75x fit width)
-			const factor = Math.max(sw / r.width, 1.75);
-			targetW = Math.round(r.width * factor);
-			targetH = Math.round(r.height * factor);
-		}
-
-		currentZoomScale = targetW / r.width;
-		isZoomed = true;
-		lbStage.classList.add("is-zoomed");
-		lbStage.style.setProperty("--zoomed-w", `${targetW}px`);
-		lbStage.style.setProperty("--zoomed-h", `${targetH}px`);
-
-		if (lbZoomToggle) {
-			lbZoomToggle.textContent = `${Math.round(currentZoomScale * 100)}%`;
-			lbZoomToggle.classList.add("active");
-		}
-
-		if (clickX !== undefined && clickY !== undefined) {
-			const u = Math.max(0, Math.min(1, (clickX - r.left) / r.width));
-			const v = Math.max(0, Math.min(1, (clickY - r.top) / r.height));
-			requestAnimationFrame(() => {
-				lbStage.scrollLeft = (u * targetW) - (clickX - lbStage.getBoundingClientRect().left);
-				lbStage.scrollTop = (v * targetH) - (clickY - lbStage.getBoundingClientRect().top);
-			});
-		} else {
-			requestAnimationFrame(() => {
-				lbStage.scrollLeft = (targetW - sw) / 2;
-				lbStage.scrollTop = (targetH - sh) / 2;
-			});
-		}
-	}
-
-	lbZoomToggle?.addEventListener("click", () => toggleZoom());
-
-	let isDragging = false;
-	let startX = 0, startY = 0;
-	let scrollStartX = 0, scrollStartY = 0;
-	let didDrag = false;
-
-	lbStage?.addEventListener("mousedown", (e) => {
-		if (!isZoomed || e.button !== 0) return;
-		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a")) return;
-		isDragging = true;
-		didDrag = false;
-		startX = e.clientX;
-		startY = e.clientY;
-		scrollStartX = lbStage.scrollLeft;
-		scrollStartY = lbStage.scrollTop;
-	});
-
-	window.addEventListener("mousemove", (e) => {
-		if (!isDragging) return;
-		const dx = e.clientX - startX;
-		const dy = e.clientY - startY;
-		if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-			didDrag = true;
-			lbStage.classList.add("is-dragging");
-		}
-		lbStage.scrollLeft = scrollStartX - dx;
-		lbStage.scrollTop = scrollStartY - dy;
-	});
-
-	window.addEventListener("mouseup", () => {
-		if (isDragging) {
-			isDragging = false;
-			lbStage.classList.remove("is-dragging");
-		}
-	});
-
-	lbStage?.addEventListener("mousemove", (e) => {
-		if (isZoomed) {
-			if (!isDragging) {
-				const rect = lbMediaWrap.getBoundingClientRect();
-				const inMedia = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
-				lbStage.style.cursor = inMedia ? "zoom-out" : "pointer";
-			}
-			return;
-		}
-		const card = cards[currentIndex];
-		if (!card) return;
-		const ext = (card.dataset.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") {
-			lbStage.style.cursor = "default";
-			return;
-		}
-		const r = getRenderedMediaRect(lbStage, lbMediaWrap.querySelector("img"), parseInt(card.dataset.width, 10), parseInt(card.dataset.height, 10));
-		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-		lbStage.style.cursor = inImage ? "zoom-in" : "pointer";
-	});
-
-	lbStage?.addEventListener("wheel", (e) => {
-		if (!lightbox.open) return;
-		const card = cards[currentIndex];
-		const ext = (card?.dataset.ext || "").toLowerCase();
-		if (ext === "mp4" || ext === "webm") return;
-
-		if (e.ctrlKey || isZoomed) {
-			e.preventDefault();
-			const delta = -e.deltaY * 0.002;
-			const postW = parseInt(card.dataset.width, 10) || 1000;
-			const postH = parseInt(card.dataset.height, 10) || 1000;
-			const r = getRenderedMediaRect(lbStage, lbMediaWrap.querySelector("img"), postW, postH);
-			const baseW = r.width / (isZoomed ? currentZoomScale : 1);
-			const baseH = r.height / (isZoomed ? currentZoomScale : 1);
-
-			let newScale = (isZoomed ? currentZoomScale : 1) + delta;
-			if (newScale < 1.05) {
-				resetZoom();
-				return;
-			}
-			if (newScale > 5) newScale = 5;
-
-			currentZoomScale = newScale;
-			isZoomed = true;
-			lbStage.classList.add("is-zoomed");
-			const targetW = Math.round(baseW * newScale);
-			const targetH = Math.round(baseH * newScale);
-			lbStage.style.setProperty("--zoomed-w", `${targetW}px`);
-			lbStage.style.setProperty("--zoomed-h", `${targetH}px`);
-			if (lbZoomToggle) {
-				lbZoomToggle.textContent = `${Math.round(currentZoomScale * 100)}%`;
-				lbZoomToggle.classList.add("active");
-			}
-		}
-	}, { passive: false });
+	let currentCardIndex = 0;
+	let currentGroupPosts = [];
+	let currentGroupIndex = 0;
 
 	function closeLightbox() {
 		document.body.classList.remove("lightbox-open");
-		resetZoom();
+		lbViewer.resetZoom();
 		if (!lightbox.open) return;
 		lightbox.close();
 		if (window.history.state?.lightbox) {
 			window.history.back();
 		}
 	}
+
+	const lbViewer = createZoomableMediaViewer({
+		stage: lbStage,
+		mediaWrap: lbMediaWrap,
+		zoomToggleBtn: lbZoomToggle,
+		hdToggleBtn: lbHdToggle,
+		onOutsideClick: closeLightbox,
+		isMediaActive: () => lightbox.open
+	});
 
 	window.addEventListener("popstate", () => {
 		document.body.classList.remove("lightbox-open");
@@ -963,8 +1177,45 @@ if (lightbox && cards.length > 0) {
 		}
 	});
 
+	function updateGroupNavArrows() {
+		if (!currentGroupPosts || currentGroupPosts.length <= 1) {
+			if (lbPrev) lbPrev.style.display = "none";
+			if (lbNext) lbNext.style.display = "none";
+			return;
+		}
+		if (lbPrev) lbPrev.style.display = currentGroupIndex > 0 ? "flex" : "none";
+		if (lbNext) lbNext.style.display = currentGroupIndex < currentGroupPosts.length - 1 ? "flex" : "none";
+	}
+
+	function goToGroupPage(idx) {
+		if (!currentGroupPosts || idx < 0 || idx >= currentGroupPosts.length) return;
+		currentGroupIndex = idx;
+		const gp = currentGroupPosts[idx];
+
+		if (lbGroupNav) {
+			lbGroupNav.querySelectorAll(".lb-page-pill").forEach((p, i) => {
+				p.classList.toggle("active", i === idx);
+			});
+		}
+
+		renderLightboxPostData({
+			id: gp.id,
+			score: gp.score,
+			hot: 0,
+			created: "",
+			width: gp.width,
+			height: gp.height,
+			ext: gp.file_ext,
+			fileUrl: gp.file_url,
+			sampleUrl: gp.sample_url,
+			previewUrl: gp.preview_url,
+			tags: gp.tags
+		}, gp.sample_url || gp.preview_url);
+
+		updateGroupNavArrows();
+	}
+
 	function renderLightboxPostData(d, thumbSrc) {
-		resetZoom();
 		lbPostLink.href = `/posts/${d.id}`;
 		lbPostLink.textContent = `#${d.id}`;
 		lbScore.textContent = `★ ${d.score}`;
@@ -984,74 +1235,7 @@ if (lightbox && cards.length > 0) {
 		lbAge.textContent = `${metaAge}${d.width}×${d.height} ${(d.ext || "").toUpperCase()}`;
 		lbHypnohubLink.href = `https://hypnohub.net/index.php?page=post&s=view&id=${d.id}`;
 
-		lbMediaWrap.innerHTML = "";
-		const ext = (d.ext || "").toLowerCase();
-
-		if (ext === "mp4" || ext === "webm") {
-			lbHdToggle.hidden = true;
-			const video = document.createElement("video");
-			video.src = d.fileUrl;
-			const cachedThumb = thumbSrc || d.sampleUrl || d.previewUrl;
-			if (cachedThumb) video.poster = cachedThumb;
-			video.controls = true;
-			video.autoplay = true;
-			video.loop = true;
-			video.playsInline = true;
-			lbMediaWrap.appendChild(video);
-		} else {
-			const hasDistinctSample = d.sampleUrl && d.sampleUrl !== d.fileUrl && ext !== "gif";
-			lbHdToggle.hidden = !hasDistinctSample;
-			lbHdToggle.classList.toggle("active", preferHD);
-			lbHdToggle.textContent = preferHD ? "HD" : "Sample";
-
-			const targetURL = preferHD || ext === "gif" ? d.fileUrl : (d.sampleUrl || d.fileUrl);
-			const cachedThumb = thumbSrc || d.sampleUrl || d.previewUrl;
-
-			const container = document.createElement("div");
-			container.className = "lb-progressive-container";
-
-			// Immediately display the already-loaded card thumbnail as base layer
-			const previewImg = document.createElement("img");
-			previewImg.className = "lb-img-preview";
-			previewImg.src = cachedThumb;
-			previewImg.alt = `Post #${d.id}`;
-			previewImg.referrerPolicy = "no-referrer";
-			container.appendChild(previewImg);
-
-			// Loading indicator
-			const loader = document.createElement("div");
-			loader.className = "lb-loader";
-			loader.setAttribute("aria-hidden", "true");
-			container.appendChild(loader);
-
-			// Full resolution image preloaded in background
-			const fullImg = new Image();
-			fullImg.className = "lb-img-full";
-			fullImg.referrerPolicy = "no-referrer";
-			fullImg.alt = `Post #${d.id}`;
-
-			const onReady = () => {
-				loader.remove();
-				fullImg.classList.add("is-loaded");
-				previewImg.classList.add("is-hidden");
-			};
-
-			fullImg.src = targetURL;
-			container.appendChild(fullImg);
-
-			if (fullImg.complete) {
-				onReady();
-			} else {
-				fullImg.decode?.().then(onReady).catch(() => {
-					fullImg.onload = onReady;
-				});
-				fullImg.onerror = () => {
-					loader.remove();
-				};
-			}
-
-			lbMediaWrap.appendChild(container);
-		}
+		lbViewer.setMedia(d, thumbSrc);
 
 		// Render clickable tags
 		lbTags.innerHTML = "";
@@ -1065,15 +1249,16 @@ if (lightbox && cards.length > 0) {
 		}
 	}
 
-	function renderLightbox(index) {
-		if (index < 0 || index >= cards.length) return;
-		currentIndex = index;
-		const card = cards[index];
+	function renderLightbox(cardIndex) {
+		if (cardIndex < 0 || cardIndex >= cards.length) return;
+		currentCardIndex = cardIndex;
+		const card = cards[cardIndex];
 		const d = card.dataset;
 		const thumbSrc = card.querySelector("img")?.currentSrc || d.sampleUrl || d.previewUrl;
 
-		lbPrev.style.visibility = index > 0 ? "visible" : "hidden";
-		lbNext.style.visibility = index < cards.length - 1 ? "visible" : "hidden";
+		currentGroupPosts = [];
+		currentGroupIndex = 0;
+		updateGroupNavArrows();
 
 		renderLightboxPostData(d, thumbSrc);
 
@@ -1091,33 +1276,27 @@ if (lightbox && cards.length > 0) {
 			if (groupCount <= 1) {
 				lbGroupNav.style.display = "none";
 				lbGroupNav.innerHTML = "";
+				currentGroupPosts = [];
+				currentGroupIndex = 0;
+				updateGroupNavArrows();
 			} else {
 				lbGroupNav.style.display = "flex";
 				const renderPills = (groupPosts, activeId) => {
+					currentGroupPosts = groupPosts;
+					const foundIdx = groupPosts.findIndex(gp => gp.id === activeId);
+					currentGroupIndex = foundIdx >= 0 ? foundIdx : 0;
+					updateGroupNavArrows();
+
 					lbGroupNav.innerHTML = "";
 					groupPosts.forEach((gp, gIdx) => {
 						const pill = document.createElement("button");
 						pill.type = "button";
-						pill.className = "lb-page-pill" + (gp.id === activeId ? " active" : "");
+						pill.className = "lb-page-pill" + (gIdx === currentGroupIndex ? " active" : "");
 						pill.textContent = String(gIdx + 1);
 						pill.title = `Page ${gIdx + 1} (Post #${gp.id})`;
 						pill.addEventListener("click", (e) => {
 							e.stopPropagation();
-							lbGroupNav.querySelectorAll(".lb-page-pill").forEach(p => p.classList.remove("active"));
-							pill.classList.add("active");
-							renderLightboxPostData({
-								id: gp.id,
-								score: gp.score,
-								hot: 0,
-								created: "",
-								width: gp.width,
-								height: gp.height,
-								ext: gp.file_ext,
-								fileUrl: gp.file_url,
-								sampleUrl: gp.sample_url,
-								previewUrl: gp.preview_url,
-								tags: gp.tags
-							}, gp.sample_url || gp.preview_url);
+							goToGroupPage(gIdx);
 						});
 						lbGroupNav.appendChild(pill);
 					});
@@ -1129,7 +1308,7 @@ if (lightbox && cards.length > 0) {
 					fetch(`/api/v1/posts/${d.id}`)
 						.then(r => r.json())
 						.then(data => {
-							if (currentIndex !== index) return;
+							if (currentCardIndex !== cardIndex) return;
 							if (data?.group_posts && data.group_posts.length > 1) {
 								groupPostsCache.set(d.id, data.group_posts);
 								renderPills(data.group_posts, parseInt(d.id, 10));
@@ -1156,19 +1335,18 @@ if (lightbox && cards.length > 0) {
 		});
 	});
 
-	lbHdToggle?.addEventListener("click", () => {
-		preferHD = !preferHD;
-		renderLightbox(currentIndex);
-	});
-
 	lbClose?.addEventListener("click", closeLightbox);
 	lbPrev?.addEventListener("click", (e) => {
 		e.stopPropagation();
-		renderLightbox(currentIndex - 1);
+		if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
+			goToGroupPage(currentGroupIndex - 1);
+		}
 	});
 	lbNext?.addEventListener("click", (e) => {
 		e.stopPropagation();
-		renderLightbox(currentIndex + 1);
+		if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
+			goToGroupPage(currentGroupIndex + 1);
+		}
 	});
 
 	lightbox.addEventListener("close", () => {
@@ -1176,7 +1354,7 @@ if (lightbox && cards.length > 0) {
 		lbMediaWrap.innerHTML = "";
 	});
 
-	// Touch swipe navigation for mobile
+	// Touch swipe navigation for mobile (across pages of a group)
 	let touchStartX = 0;
 	let touchStartY = 0;
 	let didSwipe = false;
@@ -1190,66 +1368,35 @@ if (lightbox && cards.length > 0) {
 	}, { passive: true });
 
 	lbStage?.addEventListener("touchend", (e) => {
+		if (lbViewer.isZoomed()) return;
 		if (e.changedTouches.length !== 1) return;
 		const dx = e.changedTouches[0].clientX - touchStartX;
 		const dy = e.changedTouches[0].clientY - touchStartY;
 		if (Math.abs(dx) > 45 && Math.abs(dy) < 90) {
 			didSwipe = true;
-			if (dx < 0 && currentIndex < cards.length - 1) {
-				renderLightbox(currentIndex + 1);
-			} else if (dx > 0 && currentIndex > 0) {
-				renderLightbox(currentIndex - 1);
+			if (currentGroupPosts.length > 1) {
+				if (dx < 0 && currentGroupIndex < currentGroupPosts.length - 1) {
+					goToGroupPage(currentGroupIndex + 1);
+				} else if (dx > 0 && currentGroupIndex > 0) {
+					goToGroupPage(currentGroupIndex - 1);
+				}
 			}
 		}
 	}, { passive: true });
 
-	// Click on image toggles zoom, click on black empty space closes lightbox
-	lbStage?.addEventListener("click", (e) => {
-		if (didSwipe) {
-			didSwipe = false;
-			return;
-		}
-		if (didDrag) {
-			didDrag = false;
-			return;
-		}
-		if (e.target.closest(".lb-nav") || e.target.closest("button") || e.target.closest("a") || e.target.closest("video")) {
-			return;
-		}
-
-		const card = cards[currentIndex];
-		const ext = (card?.dataset.ext || "").toLowerCase();
-		const isVideo = ext === "mp4" || ext === "webm";
-
-		if (isVideo) {
-			closeLightbox();
-			return;
-		}
-
-		if (isZoomed) {
-			toggleZoom();
-			return;
-		}
-
-		const r = getRenderedMediaRect(lbStage, lbMediaWrap.querySelector("img"), parseInt(card?.dataset.width, 10), parseInt(card?.dataset.height, 10));
-		const inImage = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-
-		if (inImage) {
-			toggleZoom(e.clientX, e.clientY);
-		} else {
-			closeLightbox();
-		}
-	});
-
-	// Keyboard navigation
+	// Keyboard navigation: ArrowLeft/ArrowRight navigates group pages only
 	document.addEventListener("keydown", (e) => {
 		if (!lightbox.open) return;
-		if (e.key === "ArrowLeft" && currentIndex > 0) {
-			e.preventDefault();
-			renderLightbox(currentIndex - 1);
-		} else if (e.key === "ArrowRight" && currentIndex < cards.length - 1) {
-			e.preventDefault();
-			renderLightbox(currentIndex + 1);
+		if (e.key === "ArrowLeft") {
+			if (currentGroupPosts.length > 1 && currentGroupIndex > 0) {
+				e.preventDefault();
+				goToGroupPage(currentGroupIndex - 1);
+			}
+		} else if (e.key === "ArrowRight") {
+			if (currentGroupPosts.length > 1 && currentGroupIndex < currentGroupPosts.length - 1) {
+				e.preventDefault();
+				goToGroupPage(currentGroupIndex + 1);
+			}
 		} else if (e.key === "Escape") {
 			e.preventDefault();
 			closeLightbox();
@@ -1257,42 +1404,46 @@ if (lightbox && cards.length > 0) {
 	});
 }
 
-// Post Detail Page progressive preloading & inline HD toggle
-function initPostDetail() {
-	const detailImg = document.getElementById("detail-img");
-	const detailHdToggle = document.getElementById("detail-hd-toggle");
-	if (detailImg) {
-		const fullSrc = detailImg.dataset.fullSrc;
-		if (fullSrc && fullSrc !== detailImg.src && !detailImg.src.endsWith(".gif")) {
-			const fullPreload = new Image();
-			fullPreload.referrerPolicy = "no-referrer";
-			fullPreload.src = fullSrc;
-			fullPreload.decode?.().then(() => {
-				const current = document.getElementById("detail-img");
-				if (current) current.src = fullSrc;
-			}).catch(() => {
-				fullPreload.onload = () => {
-					const current = document.getElementById("detail-img");
-					if (current) current.src = fullSrc;
-				};
-			});
-		}
+// Post Detail Page progressive preloading & unified zoom viewer
+let currentDetailViewer = null;
 
-		if (detailHdToggle) {
-			let isHD = false;
-			const sampleSrc = detailImg.src;
-			const hdSrc = detailImg.dataset.hdSrc || fullSrc;
-			function toggleDetailHD() {
-				isHD = !isHD;
-				detailImg.src = isHD ? hdSrc : sampleSrc;
-				detailHdToggle.textContent = isHD ? "Switch to Sample (Fast)" : "Switch to HD Original";
-				detailHdToggle.classList.toggle("active", isHD);
-			}
-			detailHdToggle.onclick = toggleDetailHD;
-			detailImg.style.cursor = "zoom-in";
-			detailImg.onclick = toggleDetailHD;
-		}
+function initPostDetail() {
+	const postStage = document.getElementById("post-stage");
+	if (!postStage) return;
+
+	if (currentDetailViewer) {
+		currentDetailViewer.destroy();
+		currentDetailViewer = null;
 	}
+
+	const mediaWrap = postStage.querySelector(".media-wrap");
+	if (!mediaWrap) return;
+
+	const zoomToggleBtn = document.getElementById("detail-zoom-toggle");
+	const hdToggleBtn = document.getElementById("detail-hd-toggle");
+	const d = postStage.dataset;
+
+	currentDetailViewer = createZoomableMediaViewer({
+		stage: postStage,
+		mediaWrap: mediaWrap,
+		zoomToggleBtn: zoomToggleBtn,
+		hdToggleBtn: hdToggleBtn,
+		onOutsideClick: null,
+		isMediaActive: () => {
+			const lb = document.getElementById("lightbox");
+			return !lb || !lb.open;
+		}
+	});
+
+	currentDetailViewer.setMedia({
+		id: d.id,
+		ext: d.ext,
+		width: d.width,
+		height: d.height,
+		fileUrl: d.fileUrl,
+		sampleUrl: d.sampleUrl,
+		previewUrl: d.previewUrl
+	});
 }
 
 initPostDetail();
