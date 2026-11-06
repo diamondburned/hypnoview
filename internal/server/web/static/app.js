@@ -69,7 +69,9 @@ const DEFAULT_SETTINGS = {
 	defaultRating: "",
 	blockedTags: [],
 	preferHD: true,
-	singleAutoplay: true
+	singleAutoplay: true,
+	thumbFit: "cover",
+	enableLightbox: true
 };
 
 function loadSettings() {
@@ -80,6 +82,8 @@ function loadSettings() {
 		return {
 			...DEFAULT_SETTINGS,
 			...parsed,
+			thumbFit: parsed.thumbFit === "contain" ? "contain" : "cover",
+			enableLightbox: parsed.enableLightbox !== false,
 			defaultWindow: { ...DEFAULT_SETTINGS.defaultWindow, ...(parsed.defaultWindow || {}) },
 			defaultSort: { ...DEFAULT_SETTINGS.defaultSort, ...(parsed.defaultSort || {}) },
 			blockedTags: Array.isArray(parsed.blockedTags) ? parsed.blockedTags : []
@@ -185,6 +189,7 @@ function applyVisualSettings(s) {
 	}
 
 	el.dataset.viewMode = s.viewMode === "single" ? "single" : "grid";
+	el.dataset.thumbFit = s.thumbFit === "contain" ? "contain" : "cover";
 
 	const maxCols = parseInt(s.maxColumns, 10);
 	if (maxCols >= 1 && maxCols <= 8) {
@@ -317,6 +322,8 @@ function updateSettingsJsonTextarea() {
 function syncSettingsDialogUI() {
 	setSegmentedActive("setting-theme", currentSettings.theme);
 	setSegmentedActive("setting-view-mode", currentSettings.viewMode);
+	setSegmentedActive("setting-thumb-fit", currentSettings.thumbFit || "cover");
+	setSegmentedActive("setting-enable-lightbox", currentSettings.enableLightbox !== false ? "true" : "false");
 
 	const maxColsInput = document.getElementById("setting-max-cols");
 	const maxColsVal = document.getElementById("setting-max-cols-val");
@@ -358,6 +365,24 @@ document.querySelectorAll("#setting-view-mode .segmented-btn").forEach((btn) => 
 		currentSettings.viewMode = btn.dataset.value;
 		saveSettings(currentSettings);
 		setSegmentedActive("setting-view-mode", currentSettings.viewMode);
+		updateSettingsJsonTextarea();
+	});
+});
+
+document.querySelectorAll("#setting-thumb-fit .segmented-btn").forEach((btn) => {
+	btn.addEventListener("click", () => {
+		currentSettings.thumbFit = btn.dataset.value;
+		saveSettings(currentSettings);
+		setSegmentedActive("setting-thumb-fit", currentSettings.thumbFit);
+		updateSettingsJsonTextarea();
+	});
+});
+
+document.querySelectorAll("#setting-enable-lightbox .segmented-btn").forEach((btn) => {
+	btn.addEventListener("click", () => {
+		currentSettings.enableLightbox = btn.dataset.value === "true";
+		saveSettings(currentSettings);
+		setSegmentedActive("setting-enable-lightbox", currentSettings.enableLightbox ? "true" : "false");
 		updateSettingsJsonTextarea();
 	});
 });
@@ -535,6 +560,8 @@ document.getElementById("settings-json-apply-btn")?.addEventListener("click", ()
 		const merged = {
 			...DEFAULT_SETTINGS,
 			...parsed,
+			thumbFit: parsed.thumbFit === "contain" ? "contain" : "cover",
+			enableLightbox: parsed.enableLightbox !== false,
 			defaultWindow: { ...DEFAULT_SETTINGS.defaultWindow, ...(parsed.defaultWindow || {}) },
 			defaultSort: { ...DEFAULT_SETTINGS.defaultSort, ...(parsed.defaultSort || {}) },
 			blockedTags: Array.isArray(parsed.blockedTags) ? parsed.blockedTags : []
@@ -1047,6 +1074,7 @@ if (lightbox && cards.length > 0) {
 		const mediaLink = card.querySelector(".card-media-link");
 		mediaLink?.addEventListener("click", (e) => {
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+			if (!currentSettings.enableLightbox) return;
 			e.preventDefault();
 			renderLightbox(idx);
 			if (!lightbox.open) {

@@ -55,6 +55,9 @@
 			if (s.viewMode === "single" || s.viewMode === "grid") {
 				el.dataset.viewMode = s.viewMode;
 			}
+			if (s.thumbFit === "contain" || s.thumbFit === "cover") {
+				el.dataset.thumbFit = s.thumbFit;
+			}
 			var maxCols = parseInt(s.maxColumns, 10);
 			if (maxCols >= 1 && maxCols <= 10) {
 				el.style.setProperty("--grid-max-cols", String(maxCols));
@@ -170,6 +173,22 @@
 						<div class="segmented-control" role="radiogroup" aria-label="Feed layout selection" id="setting-view-mode">
 							<button type="button" class="segmented-btn" data-value="grid" role="radio" aria-checked="false">Grid</button>
 							<button type="button" class="segmented-btn" data-value="single" role="radio" aria-checked="false">Single Column</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Thumbnail Scaling</label>
+						<div class="segmented-control" role="radiogroup" aria-label="Thumbnail scaling selection" id="setting-thumb-fit">
+							<button type="button" class="segmented-btn" data-value="cover" role="radio" aria-checked="false">Fill Box (Crop)</button>
+							<button type="button" class="segmented-btn" data-value="contain" role="radio" aria-checked="false">Fit to Box (Whole Image)</button>
+						</div>
+					</div>
+
+					<div class="setting-group">
+						<label class="setting-label">Post Click Action</label>
+						<div class="segmented-control" role="radiogroup" aria-label="Post click action selection" id="setting-enable-lightbox">
+							<button type="button" class="segmented-btn" data-value="true" role="radio" aria-checked="false">Lightbox Preview</button>
+							<button type="button" class="segmented-btn" data-value="false" role="radio" aria-checked="false">Go to Post Page</button>
 						</div>
 					</div>
 

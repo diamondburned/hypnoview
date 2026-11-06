@@ -247,7 +247,7 @@ html.js body.filter-open .topbar {
 		gap: 0.45rem;
 	}
 	.brand-text {
-		font-size: 1.08rem;
+		font-size: 1.05rem;
 	}
 	.topbar-nav {
 		gap: 0.2rem;
@@ -257,10 +257,19 @@ html.js body.filter-open .topbar {
 		padding: 0 0.5rem;
 		font-size: 0.78rem;
 	}
-	.mobile-filter-toggle {
+}
+
+@media (max-width: 440px) {
+	.brand-text {
+		display: none;
+	}
+	.brand-icon-bubble {
+		width: 30px;
 		height: 30px;
-		padding: 0 0.55rem;
-		font-size: 0.78rem;
+	}
+	.brand-spiral-svg {
+		width: 18px;
+		height: 18px;
 	}
 }
 
@@ -303,17 +312,21 @@ body:not(:has(#index-sidebar)) .view-mode-toggle {
 	display: none !important;
 }
 
-.view-mode-icon-single {
-	display: none;
+.view-mode-toggle .view-mode-icon-single,
+html:not([data-view-mode="single"]) .view-mode-toggle .view-mode-icon-single {
+	display: none !important;
 }
-.view-mode-icon-grid {
-	display: inline-block;
+
+.view-mode-toggle .view-mode-icon-grid {
+	display: inline-flex !important;
 }
-html[data-view-mode="single"] .view-mode-icon-grid {
-	display: none;
+
+html[data-view-mode="single"] .view-mode-toggle .view-mode-icon-grid {
+	display: none !important;
 }
-html[data-view-mode="single"] .view-mode-icon-single {
-	display: inline-block;
+
+html[data-view-mode="single"] .view-mode-toggle .view-mode-icon-single {
+	display: inline-flex !important;
 }
 
 @media (max-width: 480px) {
@@ -346,6 +359,29 @@ html[data-view-mode="single"] .view-mode-icon-single {
 	box-shadow: none;
 	transition: background-color 0.15s ease, color 0.15s ease;
 	flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+	.mobile-filter-toggle {
+		width: 34px;
+		height: 34px;
+		padding: 0;
+		justify-content: center;
+		gap: 0;
+	}
+	.mobile-filter-toggle span:not(.material-symbols-rounded) {
+		display: none;
+	}
+}
+
+@media (max-width: 480px) {
+	.mobile-filter-toggle {
+		width: 30px;
+		height: 30px;
+	}
+	.mobile-filter-toggle .material-symbols-rounded {
+		font-size: 18px;
+	}
 }
 
 .mobile-filter-toggle:hover {
@@ -1029,6 +1065,14 @@ html[data-view-mode="single"] .card-tags-row {
 	height: 100%;
 	object-fit: cover;
 	display: block;
+}
+
+html[data-thumb-fit="contain"] .card-media-link {
+	background: var(--surface-container-low);
+}
+
+html[data-thumb-fit="contain"] .card-media-link img {
+	object-fit: contain;
 }
 
 .card-badges-top {
