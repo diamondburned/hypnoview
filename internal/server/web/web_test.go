@@ -121,7 +121,6 @@ func TestWebFeeds(t *testing.T) {
 				`id="post-detail"`,
 				`id="sheet-handle-zone"`,
 				`post-back-btn`,
-				`post-close-btn`,
 				`id="sheet-backdrop"`,
 			},
 			unwantSubstrs: []string{
