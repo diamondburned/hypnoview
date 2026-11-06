@@ -172,6 +172,12 @@
 						<span>{{ .GroupPageIndex }}/{{ len .GroupPosts }}</span>
 					</span>
 					{{ end }}
+					{{ if or .Post.HasComments (gt (len .Post.Comments) 0) }}
+					<span class="badge badge-comments" title="Comments">
+						<span class="material-symbols-rounded" aria-hidden="true">chat_bubble</span>
+						{{ if gt (len .Post.Comments) 0 }}<span>{{ len .Post.Comments }}</span>{{ end }}
+					</span>
+					{{ end }}
 					<span class="material-symbols-rounded sheet-chevron" aria-hidden="true">expand_less</span>
 				</div>
 			</div>
@@ -235,6 +241,34 @@
 					</div>
 					{{ end }}
 				</div>
+
+				{{ if or .Post.HasComments (gt (len .Post.Comments) 0) }}
+				<div class="sidebar-card comments-card" id="post-comments-card">
+					<h3>Comments ({{ len .Post.Comments }})</h3>
+					{{ if gt (len .Post.Comments) 0 }}
+					<div class="comment-list">
+						{{ range .Post.Comments }}
+						<article class="comment-item" id="comment-{{ .ID }}">
+							<header class="comment-header">
+								<span class="comment-author">{{ .Creator }}</span>
+								<div class="comment-meta">
+									{{ if ne .Score 0 }}
+									<span class="comment-score" title="Comment Score">{{ if gt .Score 0 }}+{{ end }}{{ .Score }}</span>
+									{{ end }}
+									{{ if .CreatedAt }}
+									<time class="comment-date">{{ .CreatedAt }}</time>
+									{{ end }}
+								</div>
+							</header>
+							<div class="comment-body">{{ .Body }}</div>
+						</article>
+						{{ end }}
+					</div>
+					{{ else }}
+					<p class="comment-empty">Comments unavailable right now.</p>
+					{{ end }}
+				</div>
+				{{ end }}
 			</div>
 		</aside>
 

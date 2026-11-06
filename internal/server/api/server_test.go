@@ -38,6 +38,7 @@ func TestRESTAPIEndpoints(t *testing.T) {
 			CreatedAt:     hypnohub.Date(now.Add(-2 * time.Hour)),
 			ChangedAt:     hypnohub.UnixTime(now.Add(-2 * time.Hour).Unix()),
 			Status:        "active",
+			HasComments:   "true",
 		},
 		{
 			ID:            500,
@@ -119,6 +120,14 @@ func TestRESTAPIEndpoints(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/openapi.json returned %d", rec.Code)
+	}
+
+	// 6. GET /api/v1/posts/501/comments
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/posts/501/comments", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/posts/501/comments returned %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

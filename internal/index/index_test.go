@@ -2586,3 +2586,131 @@ func TestResolveUnknownTagCategoriesBulkThroughput(t *testing.T) {
 		t.Errorf("expected at most 20 single-tag name= lookups, got %d", got)
 	}
 }
+
+func TestMigrationV7ToV8AndOnDemandPostComments(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:          287540,
+			Score:       15,
+			Rating:      hypnohub.RatingSafe,
+			Tags:        "bleach orihime_inoue",
+			Status:      "active",
+			HasComments: "true",
+			CreatedAt:   hypnohub.Date(now.Add(-1 * time.Hour)),
+		},
+		{
+			ID:          287541,
+			Score:       10,
+			Rating:      hypnohub.RatingSafe,
+			Tags:        "bleach",
+			Status:      "active",
+			HasComments: "false",
+			CreatedAt:   hypnohub.Date(now.Add(-30 * time.Minute)),
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	var postViewHits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287540" {
+			postViewHits.Add(1)
+			time.Sleep(30 * time.Millisecond)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`
+				<ul id="tag-sidebar">
+					<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=bleach">bleach</a></li>
+					<li class="tag-type-character tag"><a href="index.php?page=post&s=list&tags=orihime_inoue">orihime inoue</a></li>
+				</ul>
+				<div id="comment-list">
+					<script type="text/javascript">var posts = {}; posts[287540] = {};</script>
+					<div id="c626853">
+						<div class="horizontalFlexWithMargins">
+							<div class="comment-left-col">
+								<a href="index.php?page=account&amp;s=profile&amp;uname=Bootyhunter69">Bootyhunter69</a>
+								<div class="avatar"><img src="user_avatars/avatar_65769.jpg" /></div>
+							</div>
+							<div class="comment-right-col">
+								<div>
+									<b>
+										Posted on 2026-11-05 21:41:10 <br />
+										Score: <a id="sc626853">1</a>
+									</b>
+								</div>
+								<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">
+									Aww, how... romantic(?)
+								</div>
+							</div>
+						</div>
+						<div style="text-align: right">(<a id="rc626853"></a>)</div>
+					</div>
+				</div>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"/>`))
+	}))
+	defer ts.Close()
+
+	client := hypnohub.FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+	store.SetClient(client)
+
+	// 1. Concurrent GetPost(287540) calls share 1 single-flight PostView request that resolves both tags and comments.
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, _, err := store.GetPost(ctx, 287540)
+			if err != nil {
+				t.Errorf("GetPost(287540) failed: %v", err)
+				return
+			}
+			if len(p.Comments) != 1 || p.Comments[0].Creator != "Bootyhunter69" || p.Comments[0].Body != "Aww, how... romantic(?)" {
+				t.Errorf("expected 1 comment on post 287540, got %+v", p.Comments)
+			}
+			if len(p.TagGroups) != 2 || p.TagGroups[0].Slug != "copyright" || p.TagGroups[1].Slug != "character" {
+				t.Errorf("expected resolved Copyright and Character tag groups, got %+v", p.TagGroups)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if hits := postViewHits.Load(); hits != 1 {
+		t.Errorf("expected singleflight to make 1 PostView request for tags+comments, got %d", hits)
+	}
+
+	// 2. Subsequent GetPost(287540) and GetPostComments(287540) serve cached comments with 0 upstream hits.
+	postViewHits.Store(0)
+	pCached, _, err := store.GetPost(ctx, 287540)
+	if err != nil || len(pCached.Comments) != 1 {
+		t.Fatalf("second GetPost(287540) = (%+v, %v)", pCached, err)
+	}
+	commentsCached, err := store.GetPostComments(ctx, 287540)
+	if err != nil || len(commentsCached) != 1 || commentsCached[0].ID != 626853 {
+		t.Fatalf("GetPostComments(287540) = (%+v, %v)", commentsCached, err)
+	}
+	if hits := postViewHits.Load(); hits != 0 {
+		t.Errorf("expected 0 upstream hits when comments and tags are cached, got %d", hits)
+	}
+
+	// 3. Post with HasComments=false (287541) makes 0 comment scrapes.
+	noComments, err := store.GetPostComments(ctx, 287541)
+	if err != nil || len(noComments) != 0 {
+		t.Fatalf("GetPostComments(287541) = (%+v, %v), want empty slice", noComments, err)
+	}
+	if hits := postViewHits.Load(); hits != 0 {
+		t.Errorf("expected 0 upstream hits for post with HasComments=false, got %d", hits)
+	}
+}

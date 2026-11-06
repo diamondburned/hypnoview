@@ -178,3 +178,25 @@ WHERE category = -1 AND post_count > 0
 ORDER BY RANDOM()
 LIMIT ?;
 
+-- name: GetPostComments :many
+SELECT id, post_id, creator, creator_id, created_at, score, body
+FROM post_comments
+WHERE post_id = ?
+ORDER BY id ASC;
+
+-- name: UpsertPostComment :exec
+INSERT INTO post_comments (id, post_id, creator, creator_id, created_at, score, body)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    creator    = excluded.creator,
+    creator_id = excluded.creator_id,
+    created_at = excluded.created_at,
+    score      = excluded.score,
+    body       = excluded.body;
+
+-- name: UpdatePostCommentsFetchedAt :exec
+UPDATE posts
+SET comments_fetched_at = ?
+WHERE id = ?;
+
+

@@ -107,6 +107,13 @@ type GetPostOutput struct {
 	Body PostDetailResponse
 }
 
+// GetPostCommentsOutput wraps the comments for a single post.
+type GetPostCommentsOutput struct {
+	Body struct {
+		Comments []hypnohub.Comment `json:"comments" doc:"Comments on this post in chronological order."`
+	}
+}
+
 // ListTagsInput defines query parameters for searching local indexed tags.
 type ListTagsInput struct {
 	Query string `query:"q" default:"" doc:"Tag name prefix or substring to search for."`
@@ -155,6 +162,16 @@ func (s *Server) registerRoutes() {
 		Tags:        []string{"posts"},
 		Errors:      []int{http.StatusNotFound, http.StatusInternalServerError},
 	}, s.getPost)
+
+	huma.Register(s.api, huma.Operation{
+		OperationID: "getPostComments",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/posts/{id}/comments",
+		Summary:     "Get comments for an indexed post",
+		Description: "Returns comments for a single post in chronological order, fetching and caching them from upstream on demand when needed.",
+		Tags:        []string{"posts"},
+		Errors:      []int{http.StatusNotFound, http.StatusInternalServerError},
+	}, s.getPostComments)
 
 	huma.Register(s.api, huma.Operation{
 		OperationID: "listTags",
@@ -233,6 +250,19 @@ func (s *Server) getPost(ctx context.Context, input *GetPostInput) (*GetPostOutp
 			GroupPosts: groupPosts,
 		},
 	}, nil
+}
+
+func (s *Server) getPostComments(ctx context.Context, input *GetPostInput) (*GetPostCommentsOutput, error) {
+	comments, err := s.store.GetPostComments(ctx, input.ID)
+	if err != nil {
+		if errors.Is(err, index.ErrNotFound) {
+			return nil, huma.Error404NotFound("post not found in index")
+		}
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	out := &GetPostCommentsOutput{}
+	out.Body.Comments = comments
+	return out, nil
 }
 
 func (s *Server) listTags(ctx context.Context, input *ListTagsInput) (*ListTagsOutput, error) {

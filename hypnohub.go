@@ -223,6 +223,20 @@ func (t TagType) Slug() string {
 	}
 }
 
+// CommentID uniquely identifies a comment on Hypnohub.
+type CommentID int
+
+// Comment represents a user comment on a Hypnohub post.
+type Comment struct {
+	ID        CommentID `xml:"id,attr" json:"id"`
+	PostID    PostID    `xml:"post_id,attr" json:"post_id"`
+	Creator   string    `xml:"creator,attr" json:"creator"`
+	CreatorID int       `xml:"creator_id,attr" json:"creator_id,omitempty"`
+	CreatedAt string    `xml:"created_at,attr" json:"created_at"`
+	Score     int       `xml:"score,attr" json:"score,omitempty"`
+	Body      string    `xml:"body,attr" json:"body"`
+}
+
 // Client is a Hypnohub client.
 type Client struct {
 	HTTPClient *http.Client
@@ -406,10 +420,29 @@ var (
 	tagSidebarARe  = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 	hrefAttrRe     = regexp.MustCompile(`(?is)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 	htmlTagStripRe = regexp.MustCompile(`(?is)<[^>]+>`)
+
+	commentListDivRe    = regexp.MustCompile(`(?is)<div[^>]*\bid=["']comment-list["'][^>]*>(.*)`)
+	commentPaginatorRe  = regexp.MustCompile(`(?is)<div[^>]*\bid=["']paginator["'][^>]*>`)
+	commentBlockStartRe = regexp.MustCompile(`(?is)<div[^>]*\bid=["']c(\d+)["'][^>]*>`)
+	commentFooterCutRe  = regexp.MustCompile(`(?is)(?:<div[^>]*\bstyle=["'][^"']*text-align:\s*right|<a[^>]*\bid=["']rc\d+["']|<script\b|<hr\b)`)
+	commentPostIDJSRe   = regexp.MustCompile(`(?is)\bposts\[(\d+)\]`)
+	commentVotePostIDRe = regexp.MustCompile(`(?is)\bvote\(\s*['"](\d+)['"]`)
+	commentAccountARe   = regexp.MustCompile(`(?is)<a\b([^>]*\bpage=account[^>]*)>(.*?)</a>`)
+	commentAvatarIDRe   = regexp.MustCompile(`(?is)\bavatar_(\d+)\.[a-z0-9]+`)
+	commentJSUserRe     = regexp.MustCompile(`(?is)['"]user['"]\s*:\s*['"]([^'"]+)['"]`)
+	commentJSScoreRe    = regexp.MustCompile(`(?is)['"]score['"]\s*:\s*([+-]?\d+)`)
+	commentPostedOnRe   = regexp.MustCompile(`(?is)Posted\s+on\s+([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}(?::[0-9]{2})?)`)
+	commentScoreSpanRe  = regexp.MustCompile(`(?is)<a[^>]*\bid=["']sc\d+["'][^>]*>\s*([+-]?\d+)\s*</a>`)
+	commentHeaderDivRe  = regexp.MustCompile(`(?is)<div>\s*<b>.*?Posted\s+on\s+[0-9]{4}-[0-9]{2}-[0-9]{2}.*?</b>\s*</div>`)
+	commentBodyClassRe  = regexp.MustCompile(`(?is)<div[^>]*\bclass=["'][^"']*comment-body[^"']*["'][^>]*>(.*)`)
+	htmlBrTagRe         = regexp.MustCompile(`(?is)<br\s*/?>`)
+	htmlQuoteDivRe      = regexp.MustCompile(`(?is)<(?:div[^>]*\bclass=["'][^"']*\bquote\b[^"']*["'][^>]*|blockquote[^>]*?)>(.*?)</(?:div|blockquote)>`)
+	bbcodeQuoteRe       = regexp.MustCompile(`(?is)\[quote(?:=[^\]]*)?\](.*?)\[/quote\]`)
 )
 
-// PostViewTags fetches a post's HTML view page and scrapes tag categories from <ul id="tag-sidebar">.
-func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]TagType, error) {
+// PostView fetches a post's HTML view page and scrapes both categorized sidebar tags and post comments.
+// Returns (nil, nil, nil) if the post returns HTTP 404.
+func (c *Client) PostView(ctx context.Context, postID PostID) (map[string]TagType, []Comment, error) {
 	q := url.Values{
 		"page": {"post"},
 		"s":    {"view"},
@@ -419,7 +452,7 @@ func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]Ta
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	httpClient := c.HTTPClient
@@ -428,23 +461,280 @@ func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]Ta
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get %s: %w", endpoint, err)
+		return nil, nil, fmt.Errorf("failed to get %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get %s: %s", endpoint, resp.Status)
+		return nil, nil, fmt.Errorf("failed to get %s: %s", endpoint, resp.Status)
 	}
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, fmt.Errorf("reading post view HTML: %w", err)
+		return nil, nil, fmt.Errorf("reading post view HTML: %w", err)
 	}
 
-	return ParsePostViewTags(string(bodyBytes)), nil
+	htmlStr := string(bodyBytes)
+	tags := ParsePostViewTags(htmlStr)
+	comments := ParsePostViewComments(htmlStr)
+	for i := range comments {
+		if comments[i].PostID == 0 {
+			comments[i].PostID = postID
+		}
+	}
+	return tags, comments, nil
+}
+
+// PostViewTags fetches a post's HTML view page and scrapes tag categories from <ul id="tag-sidebar">.
+func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]TagType, error) {
+	tags, _, err := c.PostView(ctx, postID)
+	return tags, err
+}
+
+// Comments fetches comments for a post by scraping its HTML view page (which includes single-comment
+// posts, accurate timestamps, and scores) and falling back to the DAPI comment endpoint when empty.
+func (c *Client) Comments(ctx context.Context, postID PostID) ([]Comment, error) {
+	_, comments, err := c.PostView(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if len(comments) > 0 {
+		return comments, nil
+	}
+	dapiComments, dapiErr := c.CommentsDAPI(ctx, postID)
+	if dapiErr == nil && len(dapiComments) > 0 {
+		return dapiComments, nil
+	}
+	return comments, nil
+}
+
+// CommentsDAPI fetches comments for a post from the Gelbooru DAPI XML endpoint
+// (index.php?page=dapi&s=comment&q=index&post_id=<ID>).
+func (c *Client) CommentsDAPI(ctx context.Context, postID PostID) ([]Comment, error) {
+	q := url.Values{
+		"page":    {"dapi"},
+		"s":       {"comment"},
+		"q":       {"index"},
+		"post_id": {strconv.Itoa(int(postID))},
+	}
+	endpoint := c.baseURL() + "/index.php?" + q.Encode()
+
+	type commentResponse struct {
+		XMLName  xml.Name  `xml:"comments"`
+		Comments []Comment `xml:"comment"`
+	}
+	resp, err := getXML[commentResponse](ctx, c.HTTPClient, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	for i := range resp.Comments {
+		if resp.Comments[i].PostID == 0 {
+			resp.Comments[i].PostID = postID
+		}
+		resp.Comments[i].Creator = strings.TrimSpace(html.UnescapeString(resp.Comments[i].Creator))
+		resp.Comments[i].CreatedAt = strings.TrimSpace(resp.Comments[i].CreatedAt)
+		resp.Comments[i].Body = cleanCommentBody(resp.Comments[i].Body)
+	}
+	slices.SortFunc(resp.Comments, func(a, b Comment) int {
+		return int(a.ID - b.ID)
+	})
+	return resp.Comments, nil
+}
+
+// ParsePostViewComments extracts comments from a Gelbooru <div id="comment-list"> HTML page or snippet.
+func ParsePostViewComments(htmlBody string) []Comment {
+	scope := htmlBody
+	if m := commentListDivRe.FindStringSubmatch(htmlBody); len(m) >= 2 {
+		scope = m[1]
+		if pm := commentPaginatorRe.FindStringIndex(scope); pm != nil {
+			scope = scope[:pm[0]]
+		}
+	}
+
+	var pagePostID PostID
+	if pm := commentPostIDJSRe.FindStringSubmatch(htmlBody); len(pm) >= 2 {
+		if n, err := strconv.Atoi(pm[1]); err == nil && n > 0 {
+			pagePostID = PostID(n)
+		}
+	}
+
+	blockLocs := commentBlockStartRe.FindAllStringSubmatchIndex(scope, -1)
+	if len(blockLocs) == 0 {
+		return nil
+	}
+
+	comments := make([]Comment, 0, len(blockLocs))
+	for i, loc := range blockLocs {
+		idStr := scope[loc[2]:loc[3]]
+		cid, err := strconv.Atoi(idStr)
+		if err != nil || cid <= 0 {
+			continue
+		}
+
+		blockEnd := len(scope)
+		if i+1 < len(blockLocs) {
+			blockEnd = blockLocs[i+1][0]
+		}
+		block := scope[loc[1]:blockEnd]
+
+		c := Comment{
+			ID:     CommentID(cid),
+			PostID: pagePostID,
+		}
+		if c.PostID == 0 {
+			if vm := commentVotePostIDRe.FindStringSubmatch(block); len(vm) >= 2 {
+				if pid, err := strconv.Atoi(vm[1]); err == nil && pid > 0 {
+					c.PostID = PostID(pid)
+				}
+			}
+		}
+
+		if am := commentAccountARe.FindStringSubmatch(block); len(am) >= 3 {
+			attrs := am[1]
+			inner := htmlTagStripRe.ReplaceAllString(am[2], "")
+			c.Creator = strings.TrimSpace(html.UnescapeString(inner))
+			if hm := hrefAttrRe.FindStringSubmatch(attrs); len(hm) >= 3 {
+				rawHref := hm[1]
+				if rawHref == "" {
+					rawHref = hm[2]
+				}
+				rawHref = html.UnescapeString(rawHref)
+				if parsedURL, err := url.Parse(rawHref); err == nil {
+					q := parsedURL.Query()
+					if c.Creator == "" {
+						c.Creator = strings.TrimSpace(q.Get("uname"))
+					}
+					if uid, err := strconv.Atoi(q.Get("id")); err == nil && uid > 0 {
+						c.CreatorID = uid
+					}
+				}
+			}
+		}
+		if c.Creator == "" {
+			if um := commentJSUserRe.FindStringSubmatch(block); len(um) >= 2 {
+				c.Creator = strings.TrimSpace(html.UnescapeString(um[1]))
+			}
+		}
+		if c.CreatorID == 0 {
+			if avm := commentAvatarIDRe.FindStringSubmatch(block); len(avm) >= 2 {
+				if uid, err := strconv.Atoi(avm[1]); err == nil && uid > 0 {
+					c.CreatorID = uid
+				}
+			}
+		}
+
+		if tm := commentPostedOnRe.FindStringSubmatch(block); len(tm) >= 2 {
+			c.CreatedAt = strings.Join(strings.Fields(tm[1]), " ")
+		}
+
+		if sm := commentScoreSpanRe.FindStringSubmatch(block); len(sm) >= 2 {
+			if sc, err := strconv.Atoi(strings.TrimSpace(sm[1])); err == nil {
+				c.Score = sc
+			}
+		} else if jsm := commentJSScoreRe.FindStringSubmatch(block); len(jsm) >= 2 {
+			if sc, err := strconv.Atoi(strings.TrimSpace(jsm[1])); err == nil {
+				c.Score = sc
+			}
+		}
+
+		var rawBody string
+		if hm := commentHeaderDivRe.FindStringIndex(block); hm != nil {
+			afterHeader := block[hm[1]:]
+			if fm := commentFooterCutRe.FindStringIndex(afterHeader); fm != nil {
+				afterHeader = afterHeader[:fm[0]]
+			}
+			rawBody = afterHeader
+		} else if bm := commentBodyClassRe.FindStringSubmatch(block); len(bm) >= 2 {
+			afterBody := bm[1]
+			if fm := commentFooterCutRe.FindStringIndex(afterBody); fm != nil {
+				afterBody = afterBody[:fm[0]]
+			}
+			rawBody = afterBody
+		}
+		c.Body = cleanCommentBody(rawBody)
+
+		comments = append(comments, c)
+	}
+
+	slices.SortFunc(comments, func(a, b Comment) int {
+		return int(a.ID - b.ID)
+	})
+	return comments
+}
+
+func formatQuoteBlock(inner string) string {
+	inner = htmlBrTagRe.ReplaceAllString(inner, "\n")
+	inner = htmlTagStripRe.ReplaceAllString(inner, "")
+	inner = html.UnescapeString(inner)
+	inner = strings.ReplaceAll(inner, "\r\n", "\n")
+	inner = strings.ReplaceAll(inner, "\r", "\n")
+	var quotedLines []string
+	for _, line := range strings.Split(strings.TrimSpace(inner), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			quotedLines = append(quotedLines, ">")
+		} else {
+			quotedLines = append(quotedLines, "> "+line)
+		}
+	}
+	if len(quotedLines) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(quotedLines, "\n") + "\n\n"
+}
+
+func cleanCommentBody(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	s := htmlBrTagRe.ReplaceAllString(raw, "\n")
+	for range 4 {
+		next := htmlQuoteDivRe.ReplaceAllStringFunc(s, func(m string) string {
+			sub := htmlQuoteDivRe.FindStringSubmatch(m)
+			if len(sub) >= 2 {
+				return formatQuoteBlock(sub[1])
+			}
+			return m
+		})
+		next = bbcodeQuoteRe.ReplaceAllStringFunc(next, func(m string) string {
+			sub := bbcodeQuoteRe.FindStringSubmatch(m)
+			if len(sub) >= 2 {
+				return formatQuoteBlock(sub[1])
+			}
+			return m
+		})
+		if next == s {
+			break
+		}
+		s = next
+	}
+	s = htmlTagStripRe.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
+	rawLines := strings.Split(s, "\n")
+	cleanedLines := make([]string, 0, len(rawLines))
+	emptyRun := 0
+	for _, line := range rawLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			emptyRun++
+			if emptyRun <= 1 && len(cleanedLines) > 0 {
+				cleanedLines = append(cleanedLines, "")
+			}
+			continue
+		}
+		emptyRun = 0
+		cleanedLines = append(cleanedLines, trimmed)
+	}
+	for len(cleanedLines) > 0 && cleanedLines[len(cleanedLines)-1] == "" {
+		cleanedLines = cleanedLines[:len(cleanedLines)-1]
+	}
+	return strings.Join(cleanedLines, "\n")
 }
 
 // ParsePostViewTags extracts a map of canonical tag name -> TagType from a Gelbooru <ul id="tag-sidebar"> HTML snippet or page.

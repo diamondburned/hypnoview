@@ -14,35 +14,46 @@ type PollRun struct {
 }
 
 type Post struct {
-	ID             int64
-	CreatedAt      int64
-	ChangedAt      int64
-	Score          int64
-	Rating         string
-	CreatorID      int64
-	ParentID       int64
-	MD5            string
-	Source         string
-	Status         string
-	HasNotes       int64
-	HasComments    int64
-	HasChildren    int64
-	FileURL        string
-	FileExt        string
-	Width          int64
-	Height         int64
-	SampleURL      string
-	SampleWidth    int64
-	SampleHeight   int64
-	PreviewURL     string
-	PreviewWidth   int64
-	PreviewHeight  int64
-	TagsRaw        string
-	FirstSeenAt    int64
-	LastPolledAt   int64
-	GroupID        int64
-	GroupIsLatest  int64
-	GroupPageCount int64
+	ID                int64
+	CreatedAt         int64
+	ChangedAt         int64
+	Score             int64
+	Rating            string
+	CreatorID         int64
+	ParentID          int64
+	MD5               string
+	Source            string
+	Status            string
+	HasNotes          int64
+	HasComments       int64
+	HasChildren       int64
+	FileURL           string
+	FileExt           string
+	Width             int64
+	Height            int64
+	SampleURL         string
+	SampleWidth       int64
+	SampleHeight      int64
+	PreviewURL        string
+	PreviewWidth      int64
+	PreviewHeight     int64
+	TagsRaw           string
+	FirstSeenAt       int64
+	LastPolledAt      int64
+	GroupID           int64
+	GroupIsLatest     int64
+	GroupPageCount    int64
+	CommentsFetchedAt int64
+}
+
+type PostComment struct {
+	ID        int64
+	PostID    int64
+	Creator   string
+	CreatorID int64
+	CreatedAt string
+	Score     int64
+	Body      string
 }
 
 type PostTag struct {

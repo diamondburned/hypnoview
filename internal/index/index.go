@@ -325,6 +325,7 @@ type IndexedPost struct {
 
 	Tags         []string           `json:"tags"`
 	TagGroups    []TagCategoryGroup `json:"tag_groups,omitempty"`
+	Comments     []hypnohub.Comment `json:"comments,omitempty"`
 	FirstSeenAt  time.Time          `json:"first_seen_at"`
 	LastPolledAt time.Time          `json:"last_polled_at"`
 
@@ -1191,9 +1192,25 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 		return nil, nil, fmt.Errorf("getting tags for post %d: %w", id, err)
 	}
 
-	s.resolvePostTagCategories(ctx, id, tagRows)
+	var commentRows []sqlcgen.PostComment
+	if postRow.HasComments != 0 {
+		commentRows, err = s.q.GetPostComments(ctx, int64(id))
+		if err != nil {
+			return nil, nil, fmt.Errorf("getting comments for post %d: %w", id, err)
+		}
+	}
+
+	needsComments := postRow.HasComments != 0 && s.needsCommentScrape(postRow.CommentsFetchedAt, commentRows)
+	s.resolvePostView(ctx, id, tagRows, needsComments)
+
 	if reloaded, err := s.q.GetPostTagsWithCategory(ctx, int64(id)); err == nil {
 		tagRows = reloaded
+	}
+	if postRow.HasComments != 0 {
+		if reloadedComments, err := s.q.GetPostComments(ctx, int64(id)); err == nil {
+			commentRows = reloadedComments
+		}
+		post.Comments = postCommentsToHypnohub(commentRows)
 	}
 
 	if len(tagRows) > 0 {
@@ -1294,9 +1311,73 @@ func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]I
 	return result, nil
 }
 
-// resolvePostTagCategories resolves unknown tag categories (-1) on a post using single-flight coalescing
-// and a 1-minute backoff on upstream failures. Already-known tag categories are never overwritten.
-func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID, tagRows []sqlcgen.GetPostTagsWithCategoryRow) {
+// GetPostComments returns the comments for a post from the local index, fetching them on demand
+// from upstream Hypnohub when the post has comments that have not yet been cached.
+func (s *Store) GetPostComments(ctx context.Context, id hypnohub.PostID) ([]hypnohub.Comment, error) {
+	postRow, err := s.q.GetPostByID(ctx, int64(id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("getting post %d: %w", id, err)
+	}
+	if postRow.HasComments == 0 {
+		return []hypnohub.Comment{}, nil
+	}
+
+	commentRows, err := s.q.GetPostComments(ctx, int64(id))
+	if err != nil {
+		return nil, fmt.Errorf("getting comments for post %d: %w", id, err)
+	}
+
+	if s.needsCommentScrape(postRow.CommentsFetchedAt, commentRows) {
+		tagRows, _ := s.q.GetPostTagsWithCategory(ctx, int64(id))
+		s.resolvePostView(ctx, id, tagRows, true)
+		if reloaded, err := s.q.GetPostComments(ctx, int64(id)); err == nil {
+			commentRows = reloaded
+		}
+	}
+
+	out := postCommentsToHypnohub(commentRows)
+	if out == nil {
+		out = []hypnohub.Comment{}
+	}
+	return out, nil
+}
+
+func (s *Store) needsCommentScrape(commentsFetchedAt int64, commentRows []sqlcgen.PostComment) bool {
+	if commentsFetchedAt == 0 {
+		return true
+	}
+	if len(commentRows) == 0 && time.Now().Unix()-commentsFetchedAt > 3600 {
+		return true
+	}
+	return false
+}
+
+func postCommentsToHypnohub(rows []sqlcgen.PostComment) []hypnohub.Comment {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]hypnohub.Comment, len(rows))
+	for i, r := range rows {
+		out[i] = hypnohub.Comment{
+			ID:        hypnohub.CommentID(r.ID),
+			PostID:    hypnohub.PostID(r.PostID),
+			Creator:   r.Creator,
+			CreatorID: int(r.CreatorID),
+			CreatedAt: r.CreatedAt,
+			Score:     int(r.Score),
+			Body:      r.Body,
+		}
+	}
+	return out
+}
+
+// resolvePostView resolves unknown tag categories (-1) and/or uncached post comments using a single
+// coalesced PostView scrape per post ID and a 1-minute backoff on upstream failures.
+// Already-known tag categories are never overwritten.
+func (s *Store) resolvePostView(ctx context.Context, id hypnohub.PostID, tagRows []sqlcgen.GetPostTagsWithCategoryRow, needsComments bool) {
 	if s.client == nil || time.Now().Unix() < s.scrapeRetryAt.Load() {
 		return
 	}
@@ -1308,7 +1389,7 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 			break
 		}
 	}
-	if !hasUnknown {
+	if !hasUnknown && !needsComments {
 		return
 	}
 
@@ -1352,12 +1433,27 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 	rCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2500*time.Millisecond)
 	defer cancel()
 
-	scraped, scrapeErr := s.client.PostViewTags(rCtx, id)
+	scraped, scrapedComments, scrapeErr := s.client.PostView(rCtx, id)
 	if scrapeErr != nil {
-		slog.Warn("on-demand post tag scrape failed", "post_id", id, "err", scrapeErr)
+		slog.Warn("on-demand post view scrape failed", "post_id", id, "err", scrapeErr)
 		if ctx.Err() == nil {
 			s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
 		}
+		return
+	}
+
+	if needsComments || len(scrapedComments) > 0 {
+		if len(scrapedComments) == 0 && needsComments {
+			if dapiComments, dapiErr := s.client.CommentsDAPI(rCtx, id); dapiErr == nil && len(dapiComments) > 0 {
+				scrapedComments = dapiComments
+			}
+		}
+		if err := s.persistPostComments(context.WithoutCancel(ctx), id, scrapedComments); err != nil {
+			slog.Warn("failed to persist on-demand post comments", "post_id", id, "err", err)
+		}
+	}
+
+	if !hasUnknown {
 		return
 	}
 
@@ -1401,6 +1497,42 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 			slog.Warn("failed to persist on-demand tag categories", "post_id", id, "err", err)
 		}
 	}
+}
+
+func (s *Store) persistPostComments(ctx context.Context, postID hypnohub.PostID, comments []hypnohub.Comment) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin post comments tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	qtx := s.q.WithTx(tx)
+	for _, c := range comments {
+		if c.ID <= 0 {
+			continue
+		}
+		if err := qtx.UpsertPostComment(ctx, sqlcgen.UpsertPostCommentParams{
+			ID:        int64(c.ID),
+			PostID:    int64(postID),
+			Creator:   c.Creator,
+			CreatorID: int64(c.CreatorID),
+			CreatedAt: c.CreatedAt,
+			Score:     int64(c.Score),
+			Body:      c.Body,
+		}); err != nil {
+			return fmt.Errorf("upserting comment %d: %w", c.ID, err)
+		}
+	}
+	if err := qtx.UpdatePostCommentsFetchedAt(ctx, sqlcgen.UpdatePostCommentsFetchedAtParams{
+		CommentsFetchedAt: time.Now().Unix(),
+		ID:                int64(postID),
+	}); err != nil {
+		return fmt.Errorf("updating comments_fetched_at for post %d: %w", postID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing post comments tx: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hypnohub.TagType) (int, error) {

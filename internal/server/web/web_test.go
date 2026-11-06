@@ -796,7 +796,20 @@ func TestCategorizedPostTagsOnWebAndAPI(t *testing.T) {
 				<li class="tag-type-artist tag"><a href="?">?</a><a href="#">thedrawing</a></li>
 				<li class="tag-type-general tag"><a href="?">?</a><a href="#">glowing eyes</a></li>
 				<li class="tag-type-metadata tag"><a href="?">?</a><a href="#">simple background</a></li>
-			</ul>`))
+			</ul>
+			<div id="comment-list">
+				<div id="c626853">
+					<div class="horizontalFlexWithMargins">
+						<div class="comment-left-col">
+							<a href="index.php?page=account&amp;s=profile&amp;uname=Bootyhunter69">Bootyhunter69</a>
+						</div>
+						<div class="comment-right-col">
+							<div><b>Posted on 2026-11-05 21:41:10 <br />Score: <a id="sc626853">4</a></b></div>
+							<div style="padding-left: 5px;">Mesmerizingspiral work!</div>
+						</div>
+					</div>
+				</div>
+			</div>`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -810,16 +823,17 @@ func TestCategorizedPostTagsOnWebAndAPI(t *testing.T) {
 	now := time.Now().UTC()
 	posts := []hypnohub.Post{
 		{
-			ID:        287547,
-			Score:     55,
-			Rating:    hypnohub.RatingExplicit,
-			Tags:      "simple_background glowing_eyes thedrawing emma_frost marvel_comics",
-			Width:     1200,
-			Height:    1600,
-			FileURL:   "https://example.com/287547.jpg",
-			SampleURL: "https://example.com/287547_sample.jpg",
-			CreatedAt: hypnohub.Date(now),
-			Status:    "active",
+			ID:          287547,
+			Score:       55,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "simple_background glowing_eyes thedrawing emma_frost marvel_comics",
+			Width:       1200,
+			Height:      1600,
+			FileURL:     "https://example.com/287547.jpg",
+			SampleURL:   "https://example.com/287547_sample.jpg",
+			CreatedAt:   hypnohub.Date(now),
+			Status:      "active",
+			HasComments: "true",
 		},
 	}
 	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
@@ -851,15 +865,25 @@ func TestCategorizedPostTagsOnWebAndAPI(t *testing.T) {
 		t.Errorf("tag categories not rendered in upstream order (Copyright -> Character -> Artist -> General -> Meta): %d, %d, %d, %d, %d",
 			idxCopyright, idxCharacter, idxArtist, idxGeneral, idxMeta)
 	}
+	if !strings.Contains(body, `id="post-comments-card"`) || !strings.Contains(body, `Bootyhunter69`) || !strings.Contains(body, `Mesmerizingspiral work!`) {
+		t.Errorf("post HTML missing rendered comments card: %s", body)
+	}
 
-	// 2. Check REST API /api/v1/posts/287547 includes tag_groups
+	// 2. Check REST API /api/v1/posts/287547 includes tag_groups and comments, and /api/v1/posts/287547/comments works
 	apiReq := httptest.NewRequest(http.MethodGet, "/api/v1/posts/287547", nil)
 	apiRec := httptest.NewRecorder()
 	srv.ServeHTTP(apiRec, apiReq)
 	if apiRec.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/posts/287547 status = %d", apiRec.Code)
 	}
-	if !strings.Contains(apiRec.Body.String(), `"tag_groups"`) || !strings.Contains(apiRec.Body.String(), `"slug":"copyright"`) {
-		t.Errorf("API response missing tag_groups / copyright slug: %s", apiRec.Body.String())
+	if !strings.Contains(apiRec.Body.String(), `"tag_groups"`) || !strings.Contains(apiRec.Body.String(), `"slug":"copyright"`) || !strings.Contains(apiRec.Body.String(), `"comments"`) {
+		t.Errorf("API response missing tag_groups / copyright slug / comments: %s", apiRec.Body.String())
+	}
+
+	commentsReq := httptest.NewRequest(http.MethodGet, "/api/v1/posts/287547/comments", nil)
+	commentsRec := httptest.NewRecorder()
+	srv.ServeHTTP(commentsRec, commentsReq)
+	if commentsRec.Code != http.StatusOK || !strings.Contains(commentsRec.Body.String(), `"Bootyhunter69"`) {
+		t.Errorf("GET /api/v1/posts/287547/comments status=%d body=%s", commentsRec.Code, commentsRec.Body.String())
 	}
 }

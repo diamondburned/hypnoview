@@ -1966,6 +1966,82 @@ body.has-post-overlay .post-detail {
 	white-space: nowrap;
 }
 
+.badge-comments {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+.badge-comments .material-symbols-rounded {
+	font-size: 14px;
+}
+
+/* Post Comments Card */
+.comments-card .comment-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+}
+
+.comment-item {
+	background: var(--surface-container-high);
+	border: 1px solid var(--outline-variant);
+	border-radius: var(--radius-sm);
+	padding: 0.65rem 0.75rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+
+.comment-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.5rem;
+	font-size: 0.78rem;
+}
+
+.comment-author {
+	font-weight: 700;
+	color: var(--primary);
+	overflow-wrap: anywhere;
+}
+
+.comment-meta {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	color: var(--on-surface-variant);
+	font-size: 0.73rem;
+}
+
+.comment-score {
+	font-weight: 600;
+	padding: 0.08rem 0.38rem;
+	border-radius: var(--radius-xs);
+	background: light-dark(oklch(0.91 0.03 335), oklch(0.26 0.03 335));
+	color: light-dark(oklch(0.32 0.10 335), oklch(0.86 0.06 335));
+}
+
+.comment-date {
+	color: var(--on-surface-variant);
+}
+
+.comment-body {
+	font-size: 0.84rem;
+	line-height: 1.45;
+	color: var(--on-surface);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.comment-empty {
+	margin: 0;
+	font-size: 0.82rem;
+	color: var(--on-surface-variant);
+}
+
 /* Post Overlay Slot (Unified Feed Lightbox / Post Detail View) */
 .post-overlay-slot {
 	display: none;

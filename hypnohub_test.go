@@ -188,3 +188,137 @@ func TestClientPostViewTagsAndTagByName(t *testing.T) {
 		t.Errorf("expected (nil, nil) for missing tag, got (%+v, %v)", missing, err)
 	}
 }
+
+func TestParsePostViewCommentsAndClientComments(t *testing.T) {
+	singleCommentHTML := `
+	<div id="comment-list">
+		<script type="text/javascript">
+			var posts = {}; posts[287540] = {}; posts[287540].comments = {};
+		</script>
+		<div id="c626853">
+			<div class="horizontalFlexWithMargins">
+				<div class="comment-left-col">
+					<a href="index.php?page=account&amp;s=profile&amp;uname=Bootyhunter69">Bootyhunter69</a>
+					<br />
+					<div class="avatar">
+						<img src="user_avatars/avatar_65769.jpg" style="width: 125px; height: auto" />
+					</div>
+				</div>
+				<div class="comment-right-col">
+					<div>
+						<b>
+							Posted on 2026-11-05 21:41:10 <br />
+							Score: <a id="sc626853">1</a>
+							(vote <a href="#" onclick="Javascript:vote('287540', '626853', 'up'); return false;">Up</a>)
+						</b>
+					</div>
+					<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">
+						Aww, how... romantic(?)
+					</div>
+				</div>
+			</div>
+			<div style="text-align: right">(<a id="rc626853"></a>)</div>
+		</div>
+	</div>`
+
+	single := ParsePostViewComments(singleCommentHTML)
+	if len(single) != 1 {
+		t.Fatalf("ParsePostViewComments single len = %d, want 1", len(single))
+	}
+	if single[0].ID != 626853 || single[0].PostID != 287540 || single[0].Creator != "Bootyhunter69" || single[0].CreatorID != 65769 || single[0].CreatedAt != "2026-11-05 21:41:10" || single[0].Score != 1 || single[0].Body != "Aww, how... romantic(?)" {
+		t.Errorf("unexpected parsed single comment: %+v", single[0])
+	}
+
+	multiCommentHTML := `
+	<div id="comment-list">
+		<script type="text/javascript">
+			var posts = {}; posts[287470] = {};
+		</script>
+		<div id="c626842">
+			<div class="horizontalFlexWithMargins">
+				<div class="comment-left-col">
+					<a href="index.php?page=account&amp;s=profile&amp;id=1705818">Hurricane</a>
+				</div>
+				<div class="comment-right-col">
+					<div>
+						<b>
+							Posted on 2026-11-05 18:42:29 <br />
+							Score: <a id="sc626842">2</a>
+						</b>
+					</div>
+					<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">
+						[quote]First line<br />Second line[/quote]<br />Come on, don&#039;t provoke &amp; test!<br />Line two
+					</div>
+				</div>
+			</div>
+			<div style="text-align: right">(<a id="rc626842"></a>)</div>
+		</div>
+		<div id="c626844">
+			<div class="horizontalFlexWithMargins">
+				<div class="comment-left-col">
+					<a href="index.php?page=account&amp;s=profile&amp;uname=HypnoScream">HypnoScream</a>
+					<div class="avatar"><img src="user_avatars/avatar_1696342.png" /></div>
+				</div>
+				<div class="comment-right-col">
+					<div>
+						<b>
+							Posted on 2026-11-05 18:46:20 <br />
+							Score: <a id="sc626844">-3</a>
+						</b>
+					</div>
+					<div style="padding-left: 5px; margin-top: 10px; margin-bottom: 10px;">
+						<div class="quote">HTML quote</div>Reply text
+					</div>
+				</div>
+			</div>
+			<hr class="light"/>
+		</div>
+	</div>`
+
+	multi := ParsePostViewComments(multiCommentHTML)
+	if len(multi) != 2 {
+		t.Fatalf("ParsePostViewComments multi len = %d, want 2", len(multi))
+	}
+	wantBody0 := "> First line\n> Second line\n\nCome on, don't provoke & test!\nLine two"
+	if multi[0].ID != 626842 || multi[0].Creator != "Hurricane" || multi[0].CreatorID != 1705818 || multi[0].Score != 2 || multi[0].Body != wantBody0 {
+		t.Errorf("unexpected multi[0]: %+v (wantBody=%q)", multi[0], wantBody0)
+	}
+	wantBody1 := "> HTML quote\n\nReply text"
+	if multi[1].ID != 626844 || multi[1].Creator != "HypnoScream" || multi[1].CreatorID != 1696342 || multi[1].Score != -3 || multi[1].Body != wantBody1 {
+		t.Errorf("unexpected multi[1]: %+v (wantBody=%q)", multi[1], wantBody1)
+	}
+
+	// Test Client.Comments HTML primary and CommentsDAPI fallback
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287540" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, singleCommentHTML)
+			return
+		}
+		if q.Get("page") == "post" && q.Get("s") == "view" && q.Get("id") == "287999" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<div id="comment-list"></div>`)
+			return
+		}
+		if q.Get("page") == "dapi" && q.Get("s") == "comment" && q.Get("post_id") == "287999" {
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><comments type="array"><comment id="700001" post_id="287999" creator="FallbackUser" creator_id="42" created_at="2026-11-06 12:00" body="Fallback &amp; clean"/></comments>`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client := FromHTTPClient(ts.Client())
+	client.BaseURL = ts.URL
+
+	c1, err := client.Comments(context.Background(), 287540)
+	if err != nil || len(c1) != 1 || c1[0].Creator != "Bootyhunter69" {
+		t.Fatalf("client.Comments(287540) = (%+v, %v)", c1, err)
+	}
+	c2, err := client.Comments(context.Background(), 287999)
+	if err != nil || len(c2) != 1 || c2[0].Creator != "FallbackUser" || c2[0].Body != "Fallback & clean" {
+		t.Fatalf("client.Comments(287999) DAPI fallback = (%+v, %v)", c2, err)
+	}
+}

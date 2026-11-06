@@ -146,12 +146,12 @@ func (q *Queries) GetMaxPollTime(ctx context.Context) (interface{}, error) {
 }
 
 const getPostByID = `-- name: GetPostByID :one
-SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts WHERE id = ?
+SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count, comments_fetched_at FROM posts WHERE id = ?
 `
 
 // GetPostByID
 //
-//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts WHERE id = ?
+//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count, comments_fetched_at FROM posts WHERE id = ?
 func (q *Queries) GetPostByID(ctx context.Context, id int64) (Post, error) {
 	row := q.db.QueryRowContext(ctx, getPostByID, id)
 	var i Post
@@ -185,8 +185,53 @@ func (q *Queries) GetPostByID(ctx context.Context, id int64) (Post, error) {
 		&i.GroupID,
 		&i.GroupIsLatest,
 		&i.GroupPageCount,
+		&i.CommentsFetchedAt,
 	)
 	return i, err
+}
+
+const getPostComments = `-- name: GetPostComments :many
+SELECT id, post_id, creator, creator_id, created_at, score, body
+FROM post_comments
+WHERE post_id = ?
+ORDER BY id ASC
+`
+
+// GetPostComments
+//
+//	SELECT id, post_id, creator, creator_id, created_at, score, body
+//	FROM post_comments
+//	WHERE post_id = ?
+//	ORDER BY id ASC
+func (q *Queries) GetPostComments(ctx context.Context, postID int64) ([]PostComment, error) {
+	rows, err := q.db.QueryContext(ctx, getPostComments, postID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PostComment
+	for rows.Next() {
+		var i PostComment
+		if err := rows.Scan(
+			&i.ID,
+			&i.PostID,
+			&i.Creator,
+			&i.CreatorID,
+			&i.CreatedAt,
+			&i.Score,
+			&i.Body,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getPostMinMaxCreatedAt = `-- name: GetPostMinMaxCreatedAt :one
@@ -464,14 +509,14 @@ func (q *Queries) InsertTag(ctx context.Context, name string) error {
 }
 
 const listGroupPosts = `-- name: ListGroupPosts :many
-SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts
+SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count, comments_fetched_at FROM posts
 WHERE group_id = ? AND status = 'active'
 ORDER BY id ASC
 `
 
 // ListGroupPosts
 //
-//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts
+//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count, comments_fetched_at FROM posts
 //	WHERE group_id = ? AND status = 'active'
 //	ORDER BY id ASC
 func (q *Queries) ListGroupPosts(ctx context.Context, groupID int64) ([]Post, error) {
@@ -513,6 +558,7 @@ func (q *Queries) ListGroupPosts(ctx context.Context, groupID int64) ([]Post, er
 			&i.GroupID,
 			&i.GroupIsLatest,
 			&i.GroupPageCount,
+			&i.CommentsFetchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -680,6 +726,27 @@ func (q *Queries) SearchTagsByPrefix(ctx context.Context, arg SearchTagsByPrefix
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePostCommentsFetchedAt = `-- name: UpdatePostCommentsFetchedAt :exec
+UPDATE posts
+SET comments_fetched_at = ?
+WHERE id = ?
+`
+
+type UpdatePostCommentsFetchedAtParams struct {
+	CommentsFetchedAt int64
+	ID                int64
+}
+
+// UpdatePostCommentsFetchedAt
+//
+//	UPDATE posts
+//	SET comments_fetched_at = ?
+//	WHERE id = ?
+func (q *Queries) UpdatePostCommentsFetchedAt(ctx context.Context, arg UpdatePostCommentsFetchedAtParams) error {
+	_, err := q.db.ExecContext(ctx, updatePostCommentsFetchedAt, arg.CommentsFetchedAt, arg.ID)
+	return err
 }
 
 const updatePostGroup = `-- name: UpdatePostGroup :exec
@@ -896,6 +963,50 @@ func (q *Queries) UpsertPost(ctx context.Context, arg UpsertPostParams) error {
 		arg.TagsRaw,
 		arg.FirstSeenAt,
 		arg.LastPolledAt,
+	)
+	return err
+}
+
+const upsertPostComment = `-- name: UpsertPostComment :exec
+INSERT INTO post_comments (id, post_id, creator, creator_id, created_at, score, body)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    creator    = excluded.creator,
+    creator_id = excluded.creator_id,
+    created_at = excluded.created_at,
+    score      = excluded.score,
+    body       = excluded.body
+`
+
+type UpsertPostCommentParams struct {
+	ID        int64
+	PostID    int64
+	Creator   string
+	CreatorID int64
+	CreatedAt string
+	Score     int64
+	Body      string
+}
+
+// UpsertPostComment
+//
+//	INSERT INTO post_comments (id, post_id, creator, creator_id, created_at, score, body)
+//	VALUES (?, ?, ?, ?, ?, ?, ?)
+//	ON CONFLICT(id) DO UPDATE SET
+//	    creator    = excluded.creator,
+//	    creator_id = excluded.creator_id,
+//	    created_at = excluded.created_at,
+//	    score      = excluded.score,
+//	    body       = excluded.body
+func (q *Queries) UpsertPostComment(ctx context.Context, arg UpsertPostCommentParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPostComment,
+		arg.ID,
+		arg.PostID,
+		arg.Creator,
+		arg.CreatorID,
+		arg.CreatedAt,
+		arg.Score,
+		arg.Body,
 	)
 	return err
 }
