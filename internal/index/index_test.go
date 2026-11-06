@@ -2124,7 +2124,8 @@ func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
 			</ul>`))
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"></tags>`))
 	}))
 	defer ts.Close()
 
@@ -2138,7 +2139,7 @@ func TestMigrationV6ToV7AndOnDemandTagResolution(t *testing.T) {
 			ID:        287547,
 			Score:     42,
 			Rating:    hypnohub.RatingExplicit,
-			Tags:      "comic hypnosis kubotite orihime_inoue bleach",
+			Tags:      "comic hypnosis kubotite orihime_inoue bleach uncategorized_extra",
 			Status:    "active",
 			CreatedAt: hypnohub.Date(now.Add(-1 * time.Hour)),
 		},
@@ -2196,7 +2197,7 @@ func TestTagResolutionOverwriteProtection(t *testing.T) {
 	}
 
 	// Mark famous_artist as Artist (1), while new_tag and ghost_tag remain Unknown (-1).
-	if err := store.persistTagCategories(ctx, map[string]hypnohub.TagType{
+	if _, err := store.persistTagCategories(ctx, map[string]hypnohub.TagType{
 		"famous_artist": hypnohub.TagTypeArtist,
 	}); err != nil {
 		t.Fatalf("persistTagCategories failed: %v", err)
@@ -2287,6 +2288,22 @@ func TestTagResolutionSingleflightAndBackoff(t *testing.T) {
 			Status:    "active",
 			CreatedAt: hypnohub.Date(now),
 		},
+		{
+			ID:        9004,
+			Score:     10,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "tag_three",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now),
+		},
+		{
+			ID:        9005,
+			Score:     10,
+			Rating:    hypnohub.RatingExplicit,
+			Tags:      "tag_four",
+			Status:    "active",
+			CreatedAt: hypnohub.Date(now),
+		},
 	}
 	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
 		t.Fatalf("IngestBatch failed: %v", err)
@@ -2295,17 +2312,33 @@ func TestTagResolutionSingleflightAndBackoff(t *testing.T) {
 	var scrapeCalls atomic.Int32
 	var failMode atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scrapeCalls.Add(1)
-		if failMode.Load() {
+		q := r.URL.Query()
+		if q.Get("page") == "post" && q.Get("s") == "view" {
+			scrapeCalls.Add(1)
+			if q.Get("id") == "9004" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if q.Get("id") == "9005" {
+				time.Sleep(80 * time.Millisecond)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if failMode.Load() {
+				time.Sleep(40 * time.Millisecond)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			time.Sleep(40 * time.Millisecond)
-			w.WriteHeader(http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<ul id="tag-sidebar">
+				<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=tag_one">tag one</a></li>
+				<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=tag_four">tag four</a></li>
+			</ul>`))
 			return
 		}
-		time.Sleep(40 * time.Millisecond)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<ul id="tag-sidebar">
-			<li class="tag-type-copyright tag"><a href="index.php?page=post&s=list&tags=tag_one">tag one</a></li>
-		</ul>`))
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><tags type="array"></tags>`))
 	}))
 	defer ts.Close()
 
@@ -2335,7 +2368,23 @@ func TestTagResolutionSingleflightAndBackoff(t *testing.T) {
 		t.Errorf("expected singleflight to make 1 upstream request across 8 concurrent GetPost calls, got %d", got)
 	}
 
-	// 2. Enable failure mode and request post 9003 -> sets 1-minute backoff so subsequent calls return in <10ms without hitting upstream.
+	// 2. PostViewTags returning HTTP 404 (post 9004) must NOT trigger global backoff.
+	if _, _, err := store.GetPost(ctx, 9004); err != nil {
+		t.Fatalf("GetPost(9004) 404 post failed: %v", err)
+	}
+	if store.scrapeRetryAt.Load() != 0 {
+		t.Errorf("expected HTTP 404 on PostViewTags NOT to set scrapeRetryAt backoff, got %d", store.scrapeRetryAt.Load())
+	}
+
+	// 3. Caller cancelling ctx at 50ms mid-scrape must NOT trigger global backoff for subsequent callers.
+	cancelCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	_, _, _ = store.GetPost(cancelCtx, 9005)
+	if store.scrapeRetryAt.Load() != 0 {
+		t.Errorf("expected cancelled caller ctx NOT to set scrapeRetryAt backoff, got %d", store.scrapeRetryAt.Load())
+	}
+
+	// 4. Enable failure mode with non-cancelled ctx on post 9003 -> sets 1-minute backoff so subsequent calls return in <10ms without hitting upstream.
 	failMode.Store(true)
 	scrapeCalls.Store(0)
 
@@ -2420,8 +2469,8 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveUnknownTagCategories failed: %v", err)
 	}
-	if resolved != 2 {
-		t.Errorf("expected 2 resolved tags (good_tag + absent_tag), got %d", resolved)
+	if resolved != 1 {
+		t.Errorf("expected 1 resolved tag (good_tag), got %d", resolved)
 	}
 	if store.tagSweepPage.Load() != 1 {
 		t.Errorf("expected tagSweepPage = 1 after first call, got %d", store.tagSweepPage.Load())
@@ -2437,8 +2486,8 @@ func TestResolveUnknownTagCategoriesResilience(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'absent_tag'").Scan(&absentCat); err != nil {
 		t.Fatalf("querying absent_tag category: %v", err)
 	}
-	if absentCat != int(hypnohub.TagTypeGeneral) {
-		t.Errorf("absent_tag category = %d, want %d (TagTypeGeneral)", absentCat, hypnohub.TagTypeGeneral)
+	if absentCat != int(hypnohub.TagTypeUnknown) {
+		t.Errorf("absent_tag category = %d, want %d (TagTypeUnknown)", absentCat, hypnohub.TagTypeUnknown)
 	}
 	if err := store.DB().QueryRowContext(ctx, "SELECT category FROM tags WHERE name = 'bad_tag'").Scan(&badCat); err != nil {
 		t.Fatalf("querying bad_tag category: %v", err)

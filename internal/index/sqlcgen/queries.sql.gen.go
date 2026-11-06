@@ -574,7 +574,7 @@ const listUnknownCategoryTags = `-- name: ListUnknownCategoryTags :many
 SELECT name
 FROM tags
 WHERE category = -1 AND post_count > 0
-ORDER BY post_count DESC, name ASC
+ORDER BY RANDOM()
 LIMIT ?
 `
 
@@ -583,7 +583,7 @@ LIMIT ?
 //	SELECT name
 //	FROM tags
 //	WHERE category = -1 AND post_count > 0
-//	ORDER BY post_count DESC, name ASC
+//	ORDER BY RANDOM()
 //	LIMIT ?
 func (q *Queries) ListUnknownCategoryTags(ctx context.Context, limit int64) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listUnknownCategoryTags, limit)
@@ -710,10 +710,10 @@ func (q *Queries) UpdatePostGroup(ctx context.Context, arg UpdatePostGroupParams
 	return err
 }
 
-const updateTagCategoryByName = `-- name: UpdateTagCategoryByName :exec
+const updateTagCategoryByName = `-- name: UpdateTagCategoryByName :execrows
 UPDATE tags
-SET category = ?
-WHERE name = ?
+SET category = ?1
+WHERE name = ?2 AND category != ?1
 `
 
 type UpdateTagCategoryByNameParams struct {
@@ -724,11 +724,14 @@ type UpdateTagCategoryByNameParams struct {
 // UpdateTagCategoryByName
 //
 //	UPDATE tags
-//	SET category = ?
-//	WHERE name = ?
-func (q *Queries) UpdateTagCategoryByName(ctx context.Context, arg UpdateTagCategoryByNameParams) error {
-	_, err := q.db.ExecContext(ctx, updateTagCategoryByName, arg.Category, arg.Name)
-	return err
+//	SET category = ?1
+//	WHERE name = ?2 AND category != ?1
+func (q *Queries) UpdateTagCategoryByName(ctx context.Context, arg UpdateTagCategoryByNameParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateTagCategoryByName, arg.Category, arg.Name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateTagPostCount = `-- name: UpdateTagPostCount :exec

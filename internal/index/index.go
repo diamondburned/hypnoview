@@ -1346,13 +1346,15 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 		return
 	}
 
-	rCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	rCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2500*time.Millisecond)
 	defer cancel()
 
 	scraped, scrapeErr := s.client.PostViewTags(rCtx, id)
 	if scrapeErr != nil {
 		slog.Warn("on-demand post tag scrape failed", "post_id", id, "err", scrapeErr)
-		s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+		if ctx.Err() == nil {
+			s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+		}
 		return
 	}
 
@@ -1374,49 +1376,56 @@ func (s *Store) resolvePostTagCategories(ctx context.Context, id hypnohub.PostID
 			tagInfo, err := s.client.TagByName(rCtx, name)
 			if err != nil {
 				slog.Warn("on-demand tag lookup failed", "post_id", id, "tag", name, "err", err)
-				s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+				if ctx.Err() == nil {
+					s.scrapeRetryAt.Store(time.Now().Add(time.Minute).Unix())
+				}
 				break
 			}
-			norm := hypnohub.TagTypeGeneral
 			if tagInfo != nil {
-				norm = tagInfo.Type.Normalize()
+				norm := tagInfo.Type.Normalize()
+				updates[name] = norm
+				tagRows[i].Category = int64(norm)
+			} else if len(scraped) > 0 {
+				updates[name] = hypnohub.TagTypeGeneral
+				tagRows[i].Category = int64(hypnohub.TagTypeGeneral)
 			}
-			updates[name] = norm
-			tagRows[i].Category = int64(norm)
 		}
 	}
 
 	flight.updates = updates
 	if len(updates) > 0 {
-		if err := s.persistTagCategories(ctx, updates); err != nil {
+		if _, err := s.persistTagCategories(context.WithoutCancel(ctx), updates); err != nil {
 			slog.Warn("failed to persist on-demand tag categories", "post_id", id, "err", err)
 		}
 	}
 }
 
-func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hypnohub.TagType) error {
+func (s *Store) persistTagCategories(ctx context.Context, updates map[string]hypnohub.TagType) (int, error) {
 	if len(updates) == 0 {
-		return nil
+		return 0, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tag category tx: %w", err)
+		return 0, fmt.Errorf("begin tag category tx: %w", err)
 	}
 	defer tx.Rollback()
 
 	qtx := s.q.WithTx(tx)
+	var updated int
 	for name, cat := range updates {
-		if err := qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
+		n, err := qtx.UpdateTagCategoryByName(ctx, sqlcgen.UpdateTagCategoryByNameParams{
 			Category: int64(cat),
 			Name:     name,
-		}); err != nil {
-			return fmt.Errorf("updating tag category for %q: %w", name, err)
+		})
+		if err != nil {
+			return 0, fmt.Errorf("updating tag category for %q: %w", name, err)
 		}
+		updated += int(n)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing tag category tx: %w", err)
+		return 0, fmt.Errorf("committing tag category tx: %w", err)
 	}
-	return nil
+	return updated, nil
 }
 
 // ResolveUnknownTagCategories resolves up to limit tags whose category is still TagTypeUnknown (-1)
@@ -1448,7 +1457,9 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 
 	// First attempt a bulk 1000-tag DAPI page sweep ordered by count DESC to resolve unknown tags in 1 request.
 	page := int(s.tagSweepPage.Add(1) - 1)
-	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr == nil {
+	if bulkTags, bulkErr := s.client.ListTagsPage(rCtx, page, 1000); bulkErr != nil {
+		slog.Warn("bulk tag page failed", "page", page, "err", bulkErr)
+	} else {
 		if len(bulkTags) == 0 {
 			s.tagSweepPage.Store(0)
 		}
@@ -1483,18 +1494,13 @@ func (s *Store) ResolveUnknownTagCategories(ctx context.Context, limit int) (int
 		consecutiveErrors = 0
 		if tagInfo != nil {
 			updates[name] = tagInfo.Type.Normalize()
-		} else {
-			updates[name] = hypnohub.TagTypeGeneral
 		}
 	}
 	if len(updates) == 0 {
 		return 0, nil
 	}
 
-	if err := s.persistTagCategories(ctx, updates); err != nil {
-		return 0, err
-	}
-	return len(updates), nil
+	return s.persistTagCategories(ctx, updates)
 }
 
 // SearchTags searches local indexed tags by prefix or substring, ordered by post count descending.

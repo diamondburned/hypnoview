@@ -166,15 +166,15 @@ JOIN tags t ON t.id = pt.tag_id
 WHERE pt.post_id = ?
 ORDER BY t.name ASC;
 
--- name: UpdateTagCategoryByName :exec
+-- name: UpdateTagCategoryByName :execrows
 UPDATE tags
-SET category = ?
-WHERE name = ?;
+SET category = sqlc.arg(category)
+WHERE name = sqlc.arg(name) AND category != sqlc.arg(category);
 
 -- name: ListUnknownCategoryTags :many
 SELECT name
 FROM tags
 WHERE category = -1 AND post_count > 0
-ORDER BY post_count DESC, name ASC
+ORDER BY RANDOM()
 LIMIT ?;
 

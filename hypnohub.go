@@ -432,6 +432,9 @@ func (c *Client) PostViewTags(ctx context.Context, postID PostID) (map[string]Ta
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get %s: %s", endpoint, resp.Status)
 	}
