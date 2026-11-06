@@ -578,6 +578,10 @@ func TestPollerSeedRetry(t *testing.T) {
 }
 
 func TestBenchmark100kPosts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 100k post benchmark in short mode")
+	}
+
 	dbPath := "../../hypnoview.db"
 	ctx := context.Background()
 	store, err := Open(ctx, dbPath)
@@ -611,15 +615,6 @@ func TestBenchmark100kPosts(t *testing.T) {
 	}
 	t.Logf("Browse feed (window=all, sort=new) took %s (total=%d, returned=%d)",
 		browseDur, resBrowse.Total, len(resBrowse.Posts))
-	elapsedBrowse := time.Since(start)
-	if err != nil {
-		t.Fatalf("QueryPosts(all, new) failed: %v", err)
-	}
-	t.Logf("QueryPosts(all, new) [Browse homepage]: %s, returned %d posts (total: %d)",
-		elapsedBrowse, len(resBrowse.Posts), resBrowse.Total)
-	if len(resBrowse.Posts) == 0 {
-		t.Errorf("expected posts returned for Browse feed")
-	}
 
 	// 2. Popular 24h: window=24h, sort=hot
 	start = time.Now()

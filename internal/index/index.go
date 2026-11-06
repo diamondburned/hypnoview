@@ -1015,13 +1015,23 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 			querySB.Where(querySB.Equal("p.group_is_latest", 1))
 		} else {
 			sub := sqlbuilder.SQLite.NewSelectBuilder()
-			sub.Select("MAX(sub_p.id)").From("posts sub_p")
+			sub.Select("1").From("posts sub_p")
 			if !filter.windowStart.IsZero() {
 				sub.JoinWithOption(sqlbuilder.LeftJoin, "baseline b_sub", "b_sub.post_id = sub_p.id")
 			}
+			sub.Where(
+				sub.GreaterThan("sub_p.group_id", 0),
+				"sub_p.group_id = p.group_id",
+				"sub_p.id > p.id",
+			)
 			filter.applyBase(sub, "sub_p", "b_sub")
-			sub.GroupBy("CASE WHEN sub_p.group_id > 0 THEN sub_p.group_id ELSE sub_p.id END")
-			querySB.Where(querySB.In("p.id", sub))
+			querySB.Where(querySB.Or(
+				querySB.Equal("p.group_is_latest", 1),
+				querySB.And(
+					querySB.GreaterThan("p.group_id", 0),
+					querySB.NotExists(sub),
+				),
+			))
 		}
 	}
 	filter.applyBase(querySB, "p", "b")

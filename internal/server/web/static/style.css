@@ -1003,6 +1003,10 @@ html[data-view-mode="single"] .card-media-link video {
 	object-fit: contain;
 }
 
+html[data-view-mode="single"] .card-media-link:has(> video.inline-autoplay-video) > img {
+	display: none;
+}
+
 html[data-view-mode="single"] .card-footer {
 	padding: 0.6rem 0.85rem;
 	font-size: 0.8rem;
@@ -1081,6 +1085,7 @@ html[data-thumb-fit="contain"] .card-media-link img {
 	right: 6px;
 	display: flex;
 	gap: 4px;
+	z-index: 2;
 }
 
 .badge-media {

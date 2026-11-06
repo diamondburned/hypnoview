@@ -143,7 +143,8 @@ func thumbURL(p index.IndexedPost) string {
 
 func thumbWidth(p index.IndexedPost) int {
 	ext := strings.ToLower(p.FileExt)
-	if ext == "mp4" || ext == "webm" || p.SampleWidth <= 0 {
+	sampleLower := strings.ToLower(p.SampleURL)
+	if ext == "mp4" || ext == "webm" || strings.HasSuffix(sampleLower, ".mp4") || strings.HasSuffix(sampleLower, ".webm") || p.SampleURL == "" || p.SampleWidth <= 0 {
 		if p.PreviewWidth > 0 {
 			return p.PreviewWidth
 		}
@@ -154,7 +155,8 @@ func thumbWidth(p index.IndexedPost) int {
 
 func thumbHeight(p index.IndexedPost) int {
 	ext := strings.ToLower(p.FileExt)
-	if ext == "mp4" || ext == "webm" || p.SampleHeight <= 0 {
+	sampleLower := strings.ToLower(p.SampleURL)
+	if ext == "mp4" || ext == "webm" || strings.HasSuffix(sampleLower, ".mp4") || strings.HasSuffix(sampleLower, ".webm") || p.SampleURL == "" || p.SampleHeight <= 0 {
 		if p.PreviewHeight > 0 {
 			return p.PreviewHeight
 		}

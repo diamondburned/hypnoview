@@ -793,7 +793,6 @@ function createZoomableMediaViewer(options) {
 	let currentThumbSrc = "";
 	let isZoomed = false;
 	let currentZoomScale = 1;
-	let preferHD = currentSettings.preferHD ?? true;
 
 	let isDragging = false;
 	let startX = 0, startY = 0;
@@ -1048,6 +1047,7 @@ function createZoomableMediaViewer(options) {
 			zoomToggleBtn.classList.remove("active");
 		}
 
+		const preferHD = currentSettings.preferHD ?? true;
 		const hasDistinctSample = postData.sampleUrl && postData.sampleUrl !== postData.fileUrl && ext !== "gif";
 		if (hdToggleBtn) {
 			hdToggleBtn.style.display = hasDistinctSample ? "" : "none";
@@ -1122,7 +1122,7 @@ function createZoomableMediaViewer(options) {
 
 	function onHdToggleClick(e) {
 		e.stopPropagation();
-		preferHD = !preferHD;
+		const preferHD = !(currentSettings.preferHD ?? true);
 		currentSettings.preferHD = preferHD;
 		saveSettings(currentSettings);
 		if (currentPost) {
@@ -1235,7 +1235,7 @@ if (lightbox && cards.length > 0) {
 		renderLightboxPostData({
 			id: gp.id,
 			score: gp.score,
-			hot: 0,
+			hot: Math.round(gp.hot_score || 0),
 			created: "",
 			width: gp.width,
 			height: gp.height,
@@ -1357,6 +1357,9 @@ if (lightbox && cards.length > 0) {
 	cards.forEach((card, idx) => {
 		const mediaLink = card.querySelector(".card-media-link");
 		mediaLink?.addEventListener("click", (e) => {
+			if (e.target.closest("video.inline-autoplay-video")) {
+				return;
+			}
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
 			if (!currentSettings.enableLightbox) return;
 			e.preventDefault();
@@ -1480,9 +1483,13 @@ function initPostDetail() {
 initPostDetail();
 
 document.body.addEventListener("htmx:afterSwap", (e) => {
-	if (e.detail?.target?.id === "post-detail" || document.getElementById("post-detail")) {
+	if (e.detail?.target?.id === "post-detail") {
 		initPostDetail();
 	}
+});
+
+document.body.addEventListener("htmx:historyRestore", () => {
+	initPostDetail();
 });
 
 // Arrow key navigation on post detail page
@@ -1507,21 +1514,15 @@ window.addEventListener("keydown", (e) => {
 });
 
 // Reusable [data-tooltip] tap/click toggle for touch & mobile devices
-document.querySelectorAll("[data-tooltip]").forEach((el) => {
-	el.addEventListener("click", (e) => {
+document.addEventListener("click", (e) => {
+	const trigger = e.target.closest("[data-tooltip]");
+	document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((openEl) => {
+		if (openEl !== trigger) openEl.classList.remove("is-tooltip-open");
+	});
+	if (trigger) {
 		e.stopPropagation();
-		const wasOpen = el.classList.contains("is-tooltip-open");
-		document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((openEl) => {
-			if (openEl !== el) openEl.classList.remove("is-tooltip-open");
-		});
-		el.classList.toggle("is-tooltip-open", !wasOpen);
-	});
-});
-
-document.addEventListener("click", () => {
-	document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((el) => {
-		el.classList.remove("is-tooltip-open");
-	});
+		trigger.classList.toggle("is-tooltip-open");
+	}
 });
 
 document.addEventListener("keydown", (e) => {
