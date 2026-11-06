@@ -79,9 +79,17 @@
 	<link rel="stylesheet" href="/static/style.css" />
 	<noscript>
 		<style>
-			#post-hd-toggle, #post-zoom-btn, #post-overlay-slot,
+			#post-hd-toggle, #post-zoom-btn, #post-close-btn, #post-overlay-slot,
 			#view-mode-toggle, #settings-toggle, #blocked-tags-btn {
 				display: none !important;
+			}
+			@media (max-width: 900px) {
+				.post-sidebar {
+					position: static !important;
+					transform: none !important;
+					height: auto !important;
+					max-height: none !important;
+				}
 			}
 		</style>
 	</noscript>

@@ -1372,6 +1372,24 @@ html[data-thumb-fit="contain"] .card-media-link img {
 	box-sizing: border-box;
 }
 
+/* Direct Post Detail View (Standalone /posts/{id}) */
+body:has(main #post-detail) .topbar {
+	display: none;
+}
+
+body:has(main #post-detail) main.container {
+	padding: 0;
+	max-width: none;
+}
+
+body:has(main #post-detail) footer.footer {
+	display: none;
+}
+
+body:has(main #post-detail) .post-detail {
+	padding: 0.75rem 1rem;
+}
+
 body.has-post-overlay .post-detail {
 	min-height: 100dvh;
 	display: flex;
@@ -1571,12 +1589,9 @@ body.has-post-overlay .post-detail {
 		height: calc(100dvh - 8.5rem);
 	}
 
-	.post-media-column:has(.post-group-switcher) .post-media-box {
-		height: calc(100dvh - 13.75rem);
-	}
-
+	.post-media-column:has(.post-group-switcher) .post-media-box,
 	body.has-post-overlay .post-media-column:has(.post-group-switcher) .post-media-box {
-		height: calc(100dvh - 11.75rem);
+		height: calc(100dvh - 15.25rem);
 	}
 
 	.post-sidebar {
@@ -1585,7 +1600,7 @@ body.has-post-overlay .post-detail {
 		background: var(--surface-container);
 		border: 1px solid var(--outline);
 		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow);
+		box-shadow: 0 8px 28px color-mix(in oklch, var(--scrim) 18%, transparent);
 		max-height: calc(100dvh - 5rem);
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -1617,11 +1632,11 @@ body.has-post-overlay .post-detail {
 
 /* Mobile Post Detail Layout (<= 900px) */
 @media (max-width: 900px) {
-	body:has(#post-detail) .topbar {
+	body:has(main #post-detail) .topbar {
 		display: none;
 	}
 
-	body:has(#post-detail) main.container {
+	body:has(main #post-detail) main.container {
 		padding: 0;
 		max-width: none;
 	}

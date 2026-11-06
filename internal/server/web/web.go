@@ -978,7 +978,7 @@ func isSafeBackURL(raw string) bool {
 	if strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
 		return false
 	}
-	if strings.HasPrefix(raw, "/posts/") {
+	if raw == "/sw.js" || strings.HasPrefix(raw, "/static/") || strings.HasPrefix(raw, "/posts/") {
 		return false
 	}
 	u, err := url.Parse(raw)

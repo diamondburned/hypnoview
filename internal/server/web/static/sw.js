@@ -70,7 +70,11 @@ self.addEventListener("fetch", (event) => {
 				const timeoutId = setTimeout(() => controller.abort(), 3500);
 
 				try {
-					const response = await fetch(request, { signal: controller.signal });
+					const response = await fetch(request, {
+						signal: controller.signal,
+						referrer: request.referrer,
+						referrerPolicy: request.referrerPolicy,
+					});
 					clearTimeout(timeoutId);
 					return response;
 				} catch (err) {

@@ -1170,10 +1170,9 @@ function closePostOverlay(fromPopState = false) {
 	}
 	document.body.classList.remove("has-post-overlay");
 
-	const mainEl = document.querySelector("main");
-	const topbarEl = document.querySelector(".topbar");
-	if (mainEl) mainEl.inert = false;
-	if (topbarEl) topbarEl.inert = false;
+	document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
+		el.inert = false;
+	});
 
 	if (overlayFeedTitle) {
 		document.title = overlayFeedTitle;
@@ -1210,10 +1209,9 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true } = {})
 
 	document.body.classList.add("has-post-overlay");
 
-	const mainEl = document.querySelector("main");
-	const topbarEl = document.querySelector(".topbar");
-	if (mainEl) mainEl.inert = true;
-	if (topbarEl) topbarEl.inert = true;
+	document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
+		el.inert = true;
+	});
 
 	if (push) {
 		window.history.pushState({ postOverlay: true, url: targetUrl }, "", targetUrl);
@@ -1240,6 +1238,15 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true } = {})
 							</div>
 						</div>
 					</div>
+				</div>
+			</div>`;
+	} else {
+		slot.innerHTML = `
+			<div class="post-detail" id="post-detail">
+				<div class="post-detail-nav">
+					<button type="button" class="icon-btn post-close-btn" id="post-close-btn" aria-label="Close preview">
+						<span class="material-symbols-rounded" aria-hidden="true">close</span>
+					</button>
 				</div>
 			</div>`;
 	}
@@ -1685,11 +1692,9 @@ function attachGlobalListeners() {
 	});
 
 	document.addEventListener("htmx:afterSwap", (e) => {
-		const target = e.detail?.target;
-		if (target?.id === "post-detail" || target?.closest?.("#post-detail")) {
-			const detail = target.id === "post-detail" ? target : target.closest("#post-detail");
-			const stage = detail?.querySelector("#post-stage");
-			const newID = stage?.dataset?.id;
+		if (e.detail?.target?.id === "post-detail" || e.detail?.target?.closest?.("#post-detail")) {
+			const stage = document.getElementById("post-stage");
+			const newID = stage?.dataset.id;
 			const newUrl = newID ? `/posts/${newID}${window.location.search}` : e.detail?.xhr?.responseURL;
 			if (newUrl) {
 				const inOverlay = document.body.classList.contains("has-post-overlay");

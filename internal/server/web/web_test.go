@@ -567,6 +567,12 @@ func TestPWAManifestAndServiceWorker(t *testing.T) {
 	if !strings.Contains(swBody, "hypnogaze-v-") {
 		t.Errorf("sw.js does not contain resolved content hash cache name")
 	}
+	if !strings.Contains(swBody, "referrer: request.referrer") {
+		t.Errorf("sw.js missing referrer: request.referrer preservation")
+	}
+	if isSafeBackURL("/sw.js") {
+		t.Errorf("isSafeBackURL(/sw.js) returned true, want false")
+	}
 
 	// 3. GET /static/shell.html and verify /shell.html is 404
 	redundantShellReq := httptest.NewRequest(http.MethodGet, "/shell.html", nil)
@@ -696,6 +702,8 @@ func TestSafeBackURL(t *testing.T) {
 		{"javascript:alert(1)", false},
 		{"/posts/100", false},
 		{"/posts/100?back=%2F", false},
+		{"/sw.js", false},
+		{"/static/style.css", false},
 		{"/", true},
 		{"/popular", true},
 		{"/?window=7d&sort=hot", true},
