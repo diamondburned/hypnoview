@@ -13,6 +13,18 @@ dev:
 generate:
 	sqlc generate
 
+# run all offline unit tests
+test:
+	go test -v ./... -skip=Example
+
+# build hypnoview package with nix
+build:
+	nix build .#default
+
+# run nix flake check (including NixOS VM test)
+check:
+	nix flake check -L
+
 # run the server in dev mode (serves templates & static files from disk if --dev is set)
 [private]
 run-dev:
@@ -20,4 +32,4 @@ run-dev:
 
 # seed the local database with the most recent 10,000 posts
 seed:
-	go run ./cmd/hypnoview --seed-only --seed-posts 10000 --db hypnoview.db
+	go run ./cmd/hypnoview --seed-only --min-posts 10000 --db hypnoview.db

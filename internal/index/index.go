@@ -7,7 +7,9 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -156,9 +158,39 @@ type Store struct {
 }
 
 // Open opens or creates a SQLite index database at the given file path (or ":memory:").
+// If an existing database file on disk is corrupted or unreadable, it is backed up to .bak
+// and a clean new database is initialized in its place.
 func Open(ctx context.Context, path string) (*Store, error) {
-	dsn := path
 	isMem := path == ":memory:" || strings.HasPrefix(path, "file::memory:") || strings.Contains(path, "mode=memory")
+	store, err := openStore(ctx, path, isMem)
+	if err == nil {
+		return store, nil
+	}
+	if isMem {
+		return nil, err
+	}
+
+	// Check if an existing file on disk failed to open/migrate/read
+	if fi, statErr := os.Stat(path); statErr == nil && !fi.IsDir() {
+		backupPath := path + ".bak"
+		slog.Warn("database file is unreadable or corrupted; moving to .bak and recreating",
+			"path", path,
+			"backup", backupPath,
+			"err", err)
+
+		_ = os.Rename(path, backupPath)
+		_ = os.Remove(path + "-wal")
+		_ = os.Remove(path + "-shm")
+
+		// Recreate brand new database
+		return openStore(ctx, path, isMem)
+	}
+
+	return nil, err
+}
+
+func openStore(ctx context.Context, path string, isMem bool) (*Store, error) {
+	dsn := path
 	var pragmas []string
 	pragmas = append(pragmas, "_pragma=foreign_keys(1)", "_pragma=synchronous(NORMAL)", "_pragma=busy_timeout(10000)")
 	if !isMem {
@@ -200,6 +232,21 @@ PRAGMA temp_store = MEMORY;
 	if err := lazymigrate.Migrate(ctx, db, schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrating sqlite schema: %w", err)
+	}
+
+	var checkResult string
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check;").Scan(&checkResult); err != nil || checkResult != "ok" {
+		_ = db.Close()
+		if err == nil {
+			err = fmt.Errorf("quick_check failed: %s", checkResult)
+		}
+		return nil, fmt.Errorf("verifying database integrity: %w", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM posts;").Scan(&count); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verifying posts table: %w", err)
 	}
 
 	return &Store{

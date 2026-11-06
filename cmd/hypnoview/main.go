@@ -25,7 +25,7 @@ type options struct {
 	listenAddr   string
 	dbPath       string
 	pollInterval time.Duration
-	seedPosts    int
+	minPosts     int
 	seedOnly     bool
 	noPoller     bool
 	devMode      bool
@@ -37,14 +37,15 @@ func main() {
 		listenAddr:   ":8080",
 		dbPath:       "hypnoview.db",
 		pollInterval: index.DefaultPollInterval,
-		seedPosts:    index.DefaultSeedPosts,
+		minPosts:     index.DefaultSeedPosts,
 	}
 
 	pflag.StringVarP(&opts.listenAddr, "listen-addr", "l", opts.listenAddr, "HTTP listen address")
 	pflag.StringVarP(&opts.dbPath, "db", "d", opts.dbPath, "Path to SQLite index database")
 	pflag.DurationVarP(&opts.pollInterval, "poll-interval", "i", opts.pollInterval, "Background index poll interval")
-	pflag.IntVar(&opts.seedPosts, "seed-posts", opts.seedPosts, "Number of recent posts to seed on initial bootstrap")
-	pflag.BoolVar(&opts.seedOnly, "seed-only", false, "Seed the database with --seed-posts and exit immediately")
+	pflag.IntVar(&opts.minPosts, "min-posts", opts.minPosts, "Minimum number of posts to maintain/seed in index")
+	pflag.IntVar(&opts.minPosts, "seed-posts", opts.minPosts, "Alias for --min-posts (number of posts to seed)")
+	pflag.BoolVar(&opts.seedOnly, "seed-only", false, "Seed the database with --min-posts and exit immediately")
 	pflag.BoolVar(&opts.noPoller, "no-poller", false, "Disable background Hypnohub polling (serve local index only)")
 	pflag.BoolVar(&opts.devMode, "dev", false, "Enable development reload mode for web assets")
 	pflag.BoolVarP(&opts.verbose, "verbose", "v", opts.verbose, "Enable debug logging")
@@ -85,14 +86,14 @@ func main() {
 	client := hypnohub.FromHTTPClient(httpClient)
 
 	poller := index.NewPoller(store, client, index.PollerConfig{
-		SeedPosts:    opts.seedPosts,
+		SeedPosts:    opts.minPosts,
 		PollInterval: opts.pollInterval,
 		Logger:       logger.With("component", "poller"),
 	})
 
 	if opts.seedOnly {
-		logger.Info("running initial seed-only mode", "db", opts.dbPath, "target_posts", opts.seedPosts)
-		if _, err := poller.Seed(ctx, opts.seedPosts); err != nil {
+		logger.Info("running initial seed-only mode", "db", opts.dbPath, "target_posts", opts.minPosts)
+		if _, err := poller.Seed(ctx, opts.minPosts); err != nil {
 			logger.Error("seed failed", "error", err)
 			os.Exit(1)
 		}

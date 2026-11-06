@@ -74,24 +74,27 @@ func NewPoller(store *Store, fetcher PostsFetcher, cfg PollerConfig) *Poller {
 	}
 }
 
-// Run starts the background polling loop. It ensures the database is seeded (or runs an
-// immediate poll if the last poll is older than PollInterval), and then polls on every tick.
+// Run starts the background polling loop. It performs an initial PollOnce immediately
+// to ingest the freshest posts right away, followed by seeding if total posts in DB are below
+// SeedPosts (minPosts), and continues periodic polling on PollInterval.
 func (p *Poller) Run(ctx context.Context) error {
+	// 1. Run an immediate poll so the freshest ~1,000 posts are available right away.
+	if _, err := p.PollOnce(ctx); err != nil {
+		p.cfg.Logger.ErrorContext(ctx, "startup poll failed", "error", err)
+	}
+
+	// 2. Check if the database has fewer than target SeedPosts and auto-seed if needed.
 	stats, err := p.store.Stats(ctx)
 	if err != nil {
 		return fmt.Errorf("checking index stats: %w", err)
 	}
 
-	if !stats.Seeded || stats.TotalPosts < p.cfg.SeedPosts {
-		p.cfg.Logger.InfoContext(ctx, "seeding index database with initial posts",
+	if stats.TotalPosts < p.cfg.SeedPosts {
+		p.cfg.Logger.InfoContext(ctx, "seeding index database up to minimum posts threshold",
 			"target_posts", p.cfg.SeedPosts,
 			"existing_posts", stats.TotalPosts)
 		if _, err := p.Seed(ctx, p.cfg.SeedPosts); err != nil {
-			p.cfg.Logger.ErrorContext(ctx, "initial seed failed", "error", err)
-		}
-	} else if time.Since(stats.LastPollTime) >= p.cfg.PollInterval {
-		if _, err := p.PollOnce(ctx); err != nil {
-			p.cfg.Logger.ErrorContext(ctx, "startup poll failed", "error", err)
+			p.cfg.Logger.ErrorContext(ctx, "background seed failed", "error", err)
 		}
 	}
 

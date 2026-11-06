@@ -1,10 +1,13 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -684,4 +687,40 @@ func TestBenchmark100kPosts(t *testing.T) {
 		t.Fatalf("SearchTags(hypno) failed: %v", err)
 	}
 	t.Logf("SearchTags('hypno'): %s, returned %d tags", elapsedSearchTags, len(tags))
+}
+
+func TestOpenCorruptedDatabaseBackup(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "corrupted.db")
+
+	garbage := []byte("not a valid sqlite database garbage content")
+	if err := os.WriteFile(dbPath, garbage, 0644); err != nil {
+		t.Fatalf("writing garbage file: %v", err)
+	}
+
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed to recover corrupted database: %v", err)
+	}
+	defer store.Close()
+
+	// Verify .bak exists and has original garbage
+	bakPath := dbPath + ".bak"
+	bakBytes, err := os.ReadFile(bakPath)
+	if err != nil {
+		t.Fatalf("expected .bak file to exist at %s: %v", bakPath, err)
+	}
+	if !bytes.Equal(bakBytes, garbage) {
+		t.Errorf("expected .bak to contain garbage bytes, got: %s", string(bakBytes))
+	}
+
+	// Verify new store is working properly
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Store Stats failed on recreated db: %v", err)
+	}
+	if stats.TotalPosts != 0 {
+		t.Errorf("expected 0 posts on fresh database, got %d", stats.TotalPosts)
+	}
 }
