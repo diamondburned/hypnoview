@@ -13,33 +13,48 @@ type PollRun struct {
 	IsSeed        int64
 }
 
+type Pool struct {
+	ID        int64
+	Name      string
+	UpdatedAt int64
+}
+
+type PoolPost struct {
+	PoolID int64
+	PostID int64
+	Seq    int64
+}
+
 type Post struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
 }
 
 type PostTag struct {

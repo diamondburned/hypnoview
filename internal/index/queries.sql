@@ -145,6 +145,7 @@ SELECT COUNT(*) AS total_posts, MIN(id) AS min_id FROM posts;
 SELECT COUNT(*)
 FROM posts p
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
         CAST(sqlc.arg(media_type) AS TEXT) = ''
@@ -161,6 +162,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -168,6 +170,7 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) + CAST(sqlc.arg(tau) AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
         CAST(sqlc.arg(media_type) AS TEXT) = ''
@@ -186,6 +189,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -193,6 +197,7 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) + CAST(sqlc.arg(tau) AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
         CAST(sqlc.arg(media_type) AS TEXT) = ''
@@ -211,6 +216,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -218,6 +224,7 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) + CAST(sqlc.arg(tau) AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
         CAST(sqlc.arg(media_type) AS TEXT) = ''
@@ -236,6 +243,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -243,6 +251,7 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - p.created_at) / 3600.0) + CAST(sqlc.arg(tau) AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
         CAST(sqlc.arg(media_type) AS TEXT) = ''
@@ -264,6 +273,7 @@ SELECT COUNT(*)
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
@@ -287,6 +297,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(sqlc.arg(window_start_unix) AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -295,6 +306,7 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
@@ -320,6 +332,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(sqlc.arg(window_start_unix) AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -328,6 +341,7 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
@@ -353,6 +367,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(sqlc.arg(window_start_unix) AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -361,6 +376,7 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
@@ -386,6 +402,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(sqlc.arg(now_unix) AS INTEGER) - CASE WHEN p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(sqlc.arg(window_start_unix) AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -394,6 +411,7 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(sqlc.arg(collapse_groups) AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(sqlc.arg(window_start_unix) AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
     AND (CAST(sqlc.arg(rating) AS TEXT) = '' OR p.rating = CAST(sqlc.arg(rating) AS TEXT))
     AND (
@@ -404,3 +422,13 @@ WHERE p.status = 'active'
     )
 ORDER BY p.score DESC, p.id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListGroupPosts :many
+SELECT * FROM posts
+WHERE group_id = ? AND status = 'active'
+ORDER BY id ASC;
+
+-- name: UpdatePostGroup :exec
+UPDATE posts
+SET group_id = ?, group_page_count = ?, group_is_latest = ?
+WHERE id = ?;

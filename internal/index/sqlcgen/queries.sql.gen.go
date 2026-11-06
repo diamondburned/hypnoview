@@ -41,51 +41,7 @@ const countPostsAll = `-- name: CountPostsAll :one
 SELECT COUNT(*)
 FROM posts p
 WHERE p.status = 'active'
-    AND (CAST(?1 AS TEXT) = '' OR p.rating = CAST(?1 AS TEXT))
-    AND (
-        CAST(?2 AS TEXT) = ''
-        OR (CAST(?2 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?2 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?2 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
-    )
-`
-
-type CountPostsAllParams struct {
-	Rating    string
-	MediaType string
-}
-
-// CountPostsAll
-//
-//	SELECT COUNT(*)
-//	FROM posts p
-//	WHERE p.status = 'active'
-//	    AND (CAST(?1 AS TEXT) = '' OR p.rating = CAST(?1 AS TEXT))
-//	    AND (
-//	        CAST(?2 AS TEXT) = ''
-//	        OR (CAST(?2 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?2 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?2 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
-//	    )
-func (q *Queries) CountPostsAll(ctx context.Context, arg CountPostsAllParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countPostsAll, arg.Rating, arg.MediaType)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countPostsWindowed = `-- name: CountPostsWindowed :one
-WITH baseline AS (
-    SELECT post_id, score AS start_score
-    FROM score_snapshots
-    WHERE poll_time >= CAST(?1 AS INTEGER) AND poll_time < CAST(?4 AS INTEGER)
-    GROUP BY post_id
-)
-SELECT COUNT(*)
-FROM posts p
-LEFT JOIN baseline b ON b.post_id = p.id
-WHERE p.status = 'active'
-    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
+    AND (CAST(?1 AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (CAST(?2 AS TEXT) = '' OR p.rating = CAST(?2 AS TEXT))
     AND (
         CAST(?3 AS TEXT) = ''
@@ -95,7 +51,56 @@ WHERE p.status = 'active'
     )
 `
 
+type CountPostsAllParams struct {
+	CollapseGroups int64
+	Rating         string
+	MediaType      string
+}
+
+// CountPostsAll
+//
+//	SELECT COUNT(*)
+//	FROM posts p
+//	WHERE p.status = 'active'
+//	    AND (CAST(?1 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (CAST(?2 AS TEXT) = '' OR p.rating = CAST(?2 AS TEXT))
+//	    AND (
+//	        CAST(?3 AS TEXT) = ''
+//	        OR (CAST(?3 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?3 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?3 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	    )
+func (q *Queries) CountPostsAll(ctx context.Context, arg CountPostsAllParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPostsAll, arg.CollapseGroups, arg.Rating, arg.MediaType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPostsWindowed = `-- name: CountPostsWindowed :one
+WITH baseline AS (
+    SELECT post_id, score AS start_score
+    FROM score_snapshots
+    WHERE poll_time >= CAST(?2 AS INTEGER) AND poll_time < CAST(?5 AS INTEGER)
+    GROUP BY post_id
+)
+SELECT COUNT(*)
+FROM posts p
+LEFT JOIN baseline b ON b.post_id = p.id
+WHERE p.status = 'active'
+    AND (CAST(?1 AS INTEGER) = 0 OR p.group_is_latest = 1)
+    AND (p.created_at >= CAST(?2 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
+    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+    AND (
+        CAST(?4 AS TEXT) = ''
+        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+    )
+`
+
 type CountPostsWindowedParams struct {
+	CollapseGroups  int64
 	WindowStartUnix int64
 	Rating          string
 	MediaType       string
@@ -107,23 +112,25 @@ type CountPostsWindowedParams struct {
 //	WITH baseline AS (
 //	    SELECT post_id, score AS start_score
 //	    FROM score_snapshots
-//	    WHERE poll_time >= CAST(?1 AS INTEGER) AND poll_time < CAST(?4 AS INTEGER)
+//	    WHERE poll_time >= CAST(?2 AS INTEGER) AND poll_time < CAST(?5 AS INTEGER)
 //	    GROUP BY post_id
 //	)
 //	SELECT COUNT(*)
 //	FROM posts p
 //	LEFT JOIN baseline b ON b.post_id = p.id
 //	WHERE p.status = 'active'
-//	    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-//	    AND (CAST(?2 AS TEXT) = '' OR p.rating = CAST(?2 AS TEXT))
+//	    AND (CAST(?1 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (p.created_at >= CAST(?2 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
+//	    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
 //	    AND (
-//	        CAST(?3 AS TEXT) = ''
-//	        OR (CAST(?3 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?3 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?3 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?4 AS TEXT) = ''
+//	        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 func (q *Queries) CountPostsWindowed(ctx context.Context, arg CountPostsWindowedParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countPostsWindowed,
+		arg.CollapseGroups,
 		arg.WindowStartUnix,
 		arg.Rating,
 		arg.MediaType,
@@ -243,12 +250,12 @@ func (q *Queries) GetMaxPollTime(ctx context.Context) (interface{}, error) {
 }
 
 const getPostByID = `-- name: GetPostByID :one
-SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at FROM posts WHERE id = ?
+SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts WHERE id = ?
 `
 
 // GetPostByID
 //
-//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at FROM posts WHERE id = ?
+//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts WHERE id = ?
 func (q *Queries) GetPostByID(ctx context.Context, id int64) (Post, error) {
 	row := q.db.QueryRowContext(ctx, getPostByID, id)
 	var i Post
@@ -279,6 +286,9 @@ func (q *Queries) GetPostByID(ctx context.Context, id int64) (Post, error) {
 		&i.TagsRaw,
 		&i.FirstSeenAt,
 		&i.LastPolledAt,
+		&i.GroupID,
+		&i.GroupIsLatest,
+		&i.GroupPageCount,
 	)
 	return i, err
 }
@@ -507,6 +517,70 @@ func (q *Queries) InsertTag(ctx context.Context, name string) error {
 	return err
 }
 
+const listGroupPosts = `-- name: ListGroupPosts :many
+SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts
+WHERE group_id = ? AND status = 'active'
+ORDER BY id ASC
+`
+
+// ListGroupPosts
+//
+//	SELECT id, created_at, changed_at, score, rating, creator_id, parent_id, md5, source, status, has_notes, has_comments, has_children, file_url, file_ext, width, height, sample_url, sample_width, sample_height, preview_url, preview_width, preview_height, tags_raw, first_seen_at, last_polled_at, group_id, group_is_latest, group_page_count FROM posts
+//	WHERE group_id = ? AND status = 'active'
+//	ORDER BY id ASC
+func (q *Queries) ListGroupPosts(ctx context.Context, groupID int64) ([]Post, error) {
+	rows, err := q.db.QueryContext(ctx, listGroupPosts, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Post
+	for rows.Next() {
+		var i Post
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.ChangedAt,
+			&i.Score,
+			&i.Rating,
+			&i.CreatorID,
+			&i.ParentID,
+			&i.MD5,
+			&i.Source,
+			&i.Status,
+			&i.HasNotes,
+			&i.HasComments,
+			&i.HasChildren,
+			&i.FileURL,
+			&i.FileExt,
+			&i.Width,
+			&i.Height,
+			&i.SampleURL,
+			&i.SampleWidth,
+			&i.SampleHeight,
+			&i.PreviewURL,
+			&i.PreviewWidth,
+			&i.PreviewHeight,
+			&i.TagsRaw,
+			&i.FirstSeenAt,
+			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPopularTags = `-- name: ListPopularTags :many
 SELECT name, post_count
 FROM tags
@@ -558,6 +632,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -565,58 +640,63 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
-    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
     AND (
-        CAST(?4 AS TEXT) = ''
-        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?5 AS TEXT) = ''
+        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY hot_score DESC, score_rate DESC, score_delta DESC, p.score DESC, p.id DESC
-LIMIT ?6 OFFSET ?5
+LIMIT ?7 OFFSET ?6
 `
 
 type ListPostsAllSortHotParams struct {
-	NowUnix   int64
-	Tau       float64
-	Rating    string
-	MediaType string
-	Offset    int64
-	Limit     int64
+	NowUnix        int64
+	Tau            float64
+	CollapseGroups int64
+	Rating         string
+	MediaType      string
+	Offset         int64
+	Limit          int64
 }
 
 type ListPostsAllSortHotRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsAllSortHot
@@ -628,6 +708,7 @@ type ListPostsAllSortHotRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    0 AS baseline_score,
 //	    p.score AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -635,19 +716,21 @@ type ListPostsAllSortHotRow struct {
 //	    CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 //	FROM posts p
 //	WHERE p.status = 'active'
-//	    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+//	    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
 //	    AND (
-//	        CAST(?4 AS TEXT) = ''
-//	        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?5 AS TEXT) = ''
+//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY hot_score DESC, score_rate DESC, score_delta DESC, p.score DESC, p.id DESC
-//	LIMIT ?6 OFFSET ?5
+//	LIMIT ?7 OFFSET ?6
 func (q *Queries) ListPostsAllSortHot(ctx context.Context, arg ListPostsAllSortHotParams) ([]ListPostsAllSortHotRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsAllSortHot,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -687,6 +770,9 @@ func (q *Queries) ListPostsAllSortHot(ctx context.Context, arg ListPostsAllSortH
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -714,6 +800,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -721,58 +808,63 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
-    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
     AND (
-        CAST(?4 AS TEXT) = ''
-        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?5 AS TEXT) = ''
+        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY p.created_at DESC, p.id DESC
-LIMIT ?6 OFFSET ?5
+LIMIT ?7 OFFSET ?6
 `
 
 type ListPostsAllSortNewParams struct {
-	NowUnix   int64
-	Tau       float64
-	Rating    string
-	MediaType string
-	Offset    int64
-	Limit     int64
+	NowUnix        int64
+	Tau            float64
+	CollapseGroups int64
+	Rating         string
+	MediaType      string
+	Offset         int64
+	Limit          int64
 }
 
 type ListPostsAllSortNewRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsAllSortNew
@@ -784,6 +876,7 @@ type ListPostsAllSortNewRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    0 AS baseline_score,
 //	    p.score AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -791,19 +884,21 @@ type ListPostsAllSortNewRow struct {
 //	    CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 //	FROM posts p
 //	WHERE p.status = 'active'
-//	    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+//	    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
 //	    AND (
-//	        CAST(?4 AS TEXT) = ''
-//	        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?5 AS TEXT) = ''
+//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY p.created_at DESC, p.id DESC
-//	LIMIT ?6 OFFSET ?5
+//	LIMIT ?7 OFFSET ?6
 func (q *Queries) ListPostsAllSortNew(ctx context.Context, arg ListPostsAllSortNewParams) ([]ListPostsAllSortNewRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsAllSortNew,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -843,6 +938,9 @@ func (q *Queries) ListPostsAllSortNew(ctx context.Context, arg ListPostsAllSortN
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -870,6 +968,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -877,58 +976,63 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
-    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
     AND (
-        CAST(?4 AS TEXT) = ''
-        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?5 AS TEXT) = ''
+        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY p.score DESC, p.id DESC
-LIMIT ?6 OFFSET ?5
+LIMIT ?7 OFFSET ?6
 `
 
 type ListPostsAllSortScoreParams struct {
-	NowUnix   int64
-	Tau       float64
-	Rating    string
-	MediaType string
-	Offset    int64
-	Limit     int64
+	NowUnix        int64
+	Tau            float64
+	CollapseGroups int64
+	Rating         string
+	MediaType      string
+	Offset         int64
+	Limit          int64
 }
 
 type ListPostsAllSortScoreRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsAllSortScore
@@ -940,6 +1044,7 @@ type ListPostsAllSortScoreRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    0 AS baseline_score,
 //	    p.score AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -947,19 +1052,21 @@ type ListPostsAllSortScoreRow struct {
 //	    CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 //	FROM posts p
 //	WHERE p.status = 'active'
-//	    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+//	    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
 //	    AND (
-//	        CAST(?4 AS TEXT) = ''
-//	        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?5 AS TEXT) = ''
+//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY p.score DESC, p.id DESC
-//	LIMIT ?6 OFFSET ?5
+//	LIMIT ?7 OFFSET ?6
 func (q *Queries) ListPostsAllSortScore(ctx context.Context, arg ListPostsAllSortScoreParams) ([]ListPostsAllSortScoreRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsAllSortScore,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -999,6 +1106,9 @@ func (q *Queries) ListPostsAllSortScore(ctx context.Context, arg ListPostsAllSor
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1026,6 +1136,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     0 AS baseline_score,
     p.score AS score_delta,
     CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -1033,58 +1144,63 @@ SELECT
     CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 FROM posts p
 WHERE p.status = 'active'
-    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
     AND (
-        CAST(?4 AS TEXT) = ''
-        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?5 AS TEXT) = ''
+        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY score_delta DESC, hot_score DESC, score_rate DESC, p.score DESC, p.id DESC
-LIMIT ?6 OFFSET ?5
+LIMIT ?7 OFFSET ?6
 `
 
 type ListPostsAllSortTopParams struct {
-	NowUnix   int64
-	Tau       float64
-	Rating    string
-	MediaType string
-	Offset    int64
-	Limit     int64
+	NowUnix        int64
+	Tau            float64
+	CollapseGroups int64
+	Rating         string
+	MediaType      string
+	Offset         int64
+	Limit          int64
 }
 
 type ListPostsAllSortTopRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsAllSortTop
@@ -1096,6 +1212,7 @@ type ListPostsAllSortTopRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    0 AS baseline_score,
 //	    p.score AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) AS REAL) AS window_hours,
@@ -1103,19 +1220,21 @@ type ListPostsAllSortTopRow struct {
 //	    CAST((CAST(p.score AS REAL) / (MAX(0.1, (CAST(?1 AS INTEGER) - p.created_at) / 3600.0) + CAST(?2 AS REAL))) * POWER(MAX(1, p.score), 0.35) AS REAL) AS hot_score
 //	FROM posts p
 //	WHERE p.status = 'active'
-//	    AND (CAST(?3 AS TEXT) = '' OR p.rating = CAST(?3 AS TEXT))
+//	    AND (CAST(?3 AS INTEGER) = 0 OR p.group_is_latest = 1)
+//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
 //	    AND (
-//	        CAST(?4 AS TEXT) = ''
-//	        OR (CAST(?4 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?4 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?4 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?5 AS TEXT) = ''
+//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY score_delta DESC, hot_score DESC, score_rate DESC, p.score DESC, p.id DESC
-//	LIMIT ?6 OFFSET ?5
+//	LIMIT ?7 OFFSET ?6
 func (q *Queries) ListPostsAllSortTop(ctx context.Context, arg ListPostsAllSortTopParams) ([]ListPostsAllSortTopRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsAllSortTop,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -1155,6 +1274,9 @@ func (q *Queries) ListPostsAllSortTop(ctx context.Context, arg ListPostsAllSortT
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1188,6 +1310,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1196,22 +1319,24 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
     AND (
-        CAST(?5 AS TEXT) = ''
-        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?6 AS TEXT) = ''
+        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY hot_score DESC, score_rate DESC, score_delta DESC, p.score DESC, p.id DESC
-LIMIT ?7 OFFSET ?6
+LIMIT ?8 OFFSET ?7
 `
 
 type ListPostsWindowedSortHotParams struct {
 	WindowStartUnix int64
 	NowUnix         int64
 	Tau             float64
+	CollapseGroups  int64
 	Rating          string
 	MediaType       string
 	Offset          int64
@@ -1219,37 +1344,40 @@ type ListPostsWindowedSortHotParams struct {
 }
 
 type ListPostsWindowedSortHotRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsWindowedSortHot
@@ -1267,6 +1395,7 @@ type ListPostsWindowedSortHotRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1275,21 +1404,23 @@ type ListPostsWindowedSortHotRow struct {
 //	FROM posts p
 //	LEFT JOIN baseline b ON b.post_id = p.id
 //	WHERE p.status = 'active'
+//	    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
 //	    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+//	    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
 //	    AND (
-//	        CAST(?5 AS TEXT) = ''
-//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?6 AS TEXT) = ''
+//	        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY hot_score DESC, score_rate DESC, score_delta DESC, p.score DESC, p.id DESC
-//	LIMIT ?7 OFFSET ?6
+//	LIMIT ?8 OFFSET ?7
 func (q *Queries) ListPostsWindowedSortHot(ctx context.Context, arg ListPostsWindowedSortHotParams) ([]ListPostsWindowedSortHotRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsWindowedSortHot,
 		arg.WindowStartUnix,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -1329,6 +1460,9 @@ func (q *Queries) ListPostsWindowedSortHot(ctx context.Context, arg ListPostsWin
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1362,6 +1496,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1370,22 +1505,24 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
     AND (
-        CAST(?5 AS TEXT) = ''
-        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?6 AS TEXT) = ''
+        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY p.created_at DESC, p.id DESC
-LIMIT ?7 OFFSET ?6
+LIMIT ?8 OFFSET ?7
 `
 
 type ListPostsWindowedSortNewParams struct {
 	WindowStartUnix int64
 	NowUnix         int64
 	Tau             float64
+	CollapseGroups  int64
 	Rating          string
 	MediaType       string
 	Offset          int64
@@ -1393,37 +1530,40 @@ type ListPostsWindowedSortNewParams struct {
 }
 
 type ListPostsWindowedSortNewRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsWindowedSortNew
@@ -1441,6 +1581,7 @@ type ListPostsWindowedSortNewRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1449,21 +1590,23 @@ type ListPostsWindowedSortNewRow struct {
 //	FROM posts p
 //	LEFT JOIN baseline b ON b.post_id = p.id
 //	WHERE p.status = 'active'
+//	    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
 //	    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+//	    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
 //	    AND (
-//	        CAST(?5 AS TEXT) = ''
-//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?6 AS TEXT) = ''
+//	        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY p.created_at DESC, p.id DESC
-//	LIMIT ?7 OFFSET ?6
+//	LIMIT ?8 OFFSET ?7
 func (q *Queries) ListPostsWindowedSortNew(ctx context.Context, arg ListPostsWindowedSortNewParams) ([]ListPostsWindowedSortNewRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsWindowedSortNew,
 		arg.WindowStartUnix,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -1503,6 +1646,9 @@ func (q *Queries) ListPostsWindowedSortNew(ctx context.Context, arg ListPostsWin
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1536,6 +1682,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1544,22 +1691,24 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
     AND (
-        CAST(?5 AS TEXT) = ''
-        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?6 AS TEXT) = ''
+        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY p.score DESC, p.id DESC
-LIMIT ?7 OFFSET ?6
+LIMIT ?8 OFFSET ?7
 `
 
 type ListPostsWindowedSortScoreParams struct {
 	WindowStartUnix int64
 	NowUnix         int64
 	Tau             float64
+	CollapseGroups  int64
 	Rating          string
 	MediaType       string
 	Offset          int64
@@ -1567,37 +1716,40 @@ type ListPostsWindowedSortScoreParams struct {
 }
 
 type ListPostsWindowedSortScoreRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsWindowedSortScore
@@ -1615,6 +1767,7 @@ type ListPostsWindowedSortScoreRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1623,21 +1776,23 @@ type ListPostsWindowedSortScoreRow struct {
 //	FROM posts p
 //	LEFT JOIN baseline b ON b.post_id = p.id
 //	WHERE p.status = 'active'
+//	    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
 //	    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+//	    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
 //	    AND (
-//	        CAST(?5 AS TEXT) = ''
-//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?6 AS TEXT) = ''
+//	        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY p.score DESC, p.id DESC
-//	LIMIT ?7 OFFSET ?6
+//	LIMIT ?8 OFFSET ?7
 func (q *Queries) ListPostsWindowedSortScore(ctx context.Context, arg ListPostsWindowedSortScoreParams) ([]ListPostsWindowedSortScoreRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsWindowedSortScore,
 		arg.WindowStartUnix,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -1677,6 +1832,9 @@ func (q *Queries) ListPostsWindowedSortScore(ctx context.Context, arg ListPostsW
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1710,6 +1868,7 @@ SELECT
     p.sample_url, p.sample_width, p.sample_height,
     p.preview_url, p.preview_width, p.preview_height,
     p.tags_raw, p.first_seen_at, p.last_polled_at,
+    p.group_id, p.group_is_latest, p.group_page_count,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
     CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
     CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1718,22 +1877,24 @@ SELECT
 FROM posts p
 LEFT JOIN baseline b ON b.post_id = p.id
 WHERE p.status = 'active'
+    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
     AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
     AND (
-        CAST(?5 AS TEXT) = ''
-        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+        CAST(?6 AS TEXT) = ''
+        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
     )
 ORDER BY score_delta DESC, hot_score DESC, score_rate DESC, p.score DESC, p.id DESC
-LIMIT ?7 OFFSET ?6
+LIMIT ?8 OFFSET ?7
 `
 
 type ListPostsWindowedSortTopParams struct {
 	WindowStartUnix int64
 	NowUnix         int64
 	Tau             float64
+	CollapseGroups  int64
 	Rating          string
 	MediaType       string
 	Offset          int64
@@ -1741,37 +1902,40 @@ type ListPostsWindowedSortTopParams struct {
 }
 
 type ListPostsWindowedSortTopRow struct {
-	ID            int64
-	CreatedAt     int64
-	ChangedAt     int64
-	Score         int64
-	Rating        string
-	CreatorID     int64
-	ParentID      int64
-	MD5           string
-	Source        string
-	Status        string
-	HasNotes      int64
-	HasComments   int64
-	HasChildren   int64
-	FileURL       string
-	FileExt       string
-	Width         int64
-	Height        int64
-	SampleURL     string
-	SampleWidth   int64
-	SampleHeight  int64
-	PreviewURL    string
-	PreviewWidth  int64
-	PreviewHeight int64
-	TagsRaw       string
-	FirstSeenAt   int64
-	LastPolledAt  int64
-	BaselineScore int64
-	ScoreDelta    int64
-	WindowHours   float64
-	ScoreRate     float64
-	HotScore      float64
+	ID             int64
+	CreatedAt      int64
+	ChangedAt      int64
+	Score          int64
+	Rating         string
+	CreatorID      int64
+	ParentID       int64
+	MD5            string
+	Source         string
+	Status         string
+	HasNotes       int64
+	HasComments    int64
+	HasChildren    int64
+	FileURL        string
+	FileExt        string
+	Width          int64
+	Height         int64
+	SampleURL      string
+	SampleWidth    int64
+	SampleHeight   int64
+	PreviewURL     string
+	PreviewWidth   int64
+	PreviewHeight  int64
+	TagsRaw        string
+	FirstSeenAt    int64
+	LastPolledAt   int64
+	GroupID        int64
+	GroupIsLatest  int64
+	GroupPageCount int64
+	BaselineScore  int64
+	ScoreDelta     int64
+	WindowHours    float64
+	ScoreRate      float64
+	HotScore       float64
 }
 
 // ListPostsWindowedSortTop
@@ -1789,6 +1953,7 @@ type ListPostsWindowedSortTopRow struct {
 //	    p.sample_url, p.sample_width, p.sample_height,
 //	    p.preview_url, p.preview_width, p.preview_height,
 //	    p.tags_raw, p.first_seen_at, p.last_polled_at,
+//	    p.group_id, p.group_is_latest, p.group_page_count,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN 0 ELSE COALESCE(b.start_score, p.score) END AS INTEGER) AS baseline_score,
 //	    CAST(CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.score ELSE MAX(0, p.score - COALESCE(b.start_score, p.score)) END AS INTEGER) AS score_delta,
 //	    CAST(MAX(0.1, (CAST(?2 AS INTEGER) - CASE WHEN p.created_at >= CAST(?1 AS INTEGER) THEN p.created_at ELSE COALESCE(b.start_time, CAST(?1 AS INTEGER)) END) / 3600.0) AS REAL) AS window_hours,
@@ -1797,21 +1962,23 @@ type ListPostsWindowedSortTopRow struct {
 //	FROM posts p
 //	LEFT JOIN baseline b ON b.post_id = p.id
 //	WHERE p.status = 'active'
+//	    AND (CAST(?4 AS INTEGER) = 0 OR p.group_is_latest = 1)
 //	    AND (p.created_at >= CAST(?1 AS INTEGER) OR (b.start_score IS NOT NULL AND p.score > b.start_score))
-//	    AND (CAST(?4 AS TEXT) = '' OR p.rating = CAST(?4 AS TEXT))
+//	    AND (CAST(?5 AS TEXT) = '' OR p.rating = CAST(?5 AS TEXT))
 //	    AND (
-//	        CAST(?5 AS TEXT) = ''
-//	        OR (CAST(?5 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
-//	        OR (CAST(?5 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
-//	        OR (CAST(?5 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
+//	        CAST(?6 AS TEXT) = ''
+//	        OR (CAST(?6 AS TEXT) = 'video' AND p.file_ext IN ('mp4', 'webm'))
+//	        OR (CAST(?6 AS TEXT) = 'animated' AND p.file_ext IN ('mp4', 'webm', 'gif'))
+//	        OR (CAST(?6 AS TEXT) = 'image' AND p.file_ext NOT IN ('mp4', 'webm', 'gif'))
 //	    )
 //	ORDER BY score_delta DESC, hot_score DESC, score_rate DESC, p.score DESC, p.id DESC
-//	LIMIT ?7 OFFSET ?6
+//	LIMIT ?8 OFFSET ?7
 func (q *Queries) ListPostsWindowedSortTop(ctx context.Context, arg ListPostsWindowedSortTopParams) ([]ListPostsWindowedSortTopRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPostsWindowedSortTop,
 		arg.WindowStartUnix,
 		arg.NowUnix,
 		arg.Tau,
+		arg.CollapseGroups,
 		arg.Rating,
 		arg.MediaType,
 		arg.Offset,
@@ -1851,6 +2018,9 @@ func (q *Queries) ListPostsWindowedSortTop(ctx context.Context, arg ListPostsWin
 			&i.TagsRaw,
 			&i.FirstSeenAt,
 			&i.LastPolledAt,
+			&i.GroupID,
+			&i.GroupIsLatest,
+			&i.GroupPageCount,
 			&i.BaselineScore,
 			&i.ScoreDelta,
 			&i.WindowHours,
@@ -1942,6 +2112,34 @@ func (q *Queries) SearchTagsByPrefix(ctx context.Context, arg SearchTagsByPrefix
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePostGroup = `-- name: UpdatePostGroup :exec
+UPDATE posts
+SET group_id = ?, group_page_count = ?, group_is_latest = ?
+WHERE id = ?
+`
+
+type UpdatePostGroupParams struct {
+	GroupID        int64
+	GroupPageCount int64
+	GroupIsLatest  int64
+	ID             int64
+}
+
+// UpdatePostGroup
+//
+//	UPDATE posts
+//	SET group_id = ?, group_page_count = ?, group_is_latest = ?
+//	WHERE id = ?
+func (q *Queries) UpdatePostGroup(ctx context.Context, arg UpdatePostGroupParams) error {
+	_, err := q.db.ExecContext(ctx, updatePostGroup,
+		arg.GroupID,
+		arg.GroupPageCount,
+		arg.GroupIsLatest,
+		arg.ID,
+	)
+	return err
 }
 
 const updateTagPostCount = `-- name: UpdateTagPostCount :exec

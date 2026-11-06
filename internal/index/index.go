@@ -309,6 +309,11 @@ type IndexedPost struct {
 	FirstSeenAt   time.Time       `json:"first_seen_at"`
 	LastPolledAt  time.Time       `json:"last_polled_at"`
 
+	// Group / pool / sibling metrics:
+	GroupID        hypnohub.PostID `json:"group_id"`
+	GroupPageCount int             `json:"group_page_count"`
+	GroupIsLatest  bool            `json:"group_is_latest"`
+
 	// Popularity metrics for the queried window:
 	BaselineScore int             `json:"baseline_score"`
 	ScoreDelta    int             `json:"score_delta"`
@@ -364,11 +369,19 @@ func (s *Store) IngestBatch(
 	pollUnix := pollTime.UTC().Unix()
 	tagIDCache := make(map[string]int64, 1024)
 	affectedTagIDs := make(map[int64]struct{}, 1024)
+	affectedGroupIDs := make(map[int64]struct{}, 128)
 	upserted := 0
 
 	for _, p := range posts {
 		if !p.ID.IsValid() {
 			continue
+		}
+
+		if p.ParentID > 0 || p.HasChildren {
+			affectedGroupIDs[int64(p.ID)] = struct{}{}
+			if p.ParentID > 0 {
+				affectedGroupIDs[int64(p.ParentID)] = struct{}{}
+			}
 		}
 
 		tagsSlice := p.Tags.Split()
@@ -471,6 +484,16 @@ func (s *Store) IngestBatch(
 		}
 	}
 
+	if len(affectedGroupIDs) > 0 {
+		seedIDs := make([]int64, 0, len(affectedGroupIDs))
+		for id := range affectedGroupIDs {
+			seedIDs = append(seedIDs, id)
+		}
+		if err := recomputePostGroups(ctx, tx, seedIDs); err != nil {
+			return 0, fmt.Errorf("recomputing post groups: %w", err)
+		}
+	}
+
 	err = qtx.InsertPollRun(ctx, sqlcgen.InsertPollRunParams{
 		PollTime:      pollUnix,
 		StartedAt:     startedAt.UTC().Unix(),
@@ -490,17 +513,286 @@ func (s *Store) IngestBatch(
 	return upserted, nil
 }
 
+func recomputePostGroups(ctx context.Context, tx *sql.Tx, seedIDs []int64) error {
+	if len(seedIDs) == 0 {
+		return nil
+	}
+
+	frontier := make([]int64, 0, len(seedIDs))
+	seen := make(map[int64]bool, len(seedIDs)*2)
+	for _, id := range seedIDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			frontier = append(frontier, id)
+		}
+	}
+
+	type postNode struct {
+		id       int64
+		parentID int64
+		groupID  int64
+		status   string
+	}
+
+	allNodes := make(map[int64]postNode)
+
+	for len(frontier) > 0 {
+		batch := frontier
+		frontier = nil
+
+		for i := 0; i < len(batch); i += 500 {
+			end := min(len(batch), i+500)
+			chunk := batch[i:end]
+
+			placeholders := strings.Repeat("?,", len(chunk))
+			placeholders = placeholders[:len(placeholders)-1]
+
+			query := fmt.Sprintf(`
+				SELECT id, parent_id, group_id, status
+				FROM posts
+				WHERE id IN (%s) OR parent_id IN (%s) OR (group_id > 0 AND group_id IN (%s))
+			`, placeholders, placeholders, placeholders)
+
+			args := make([]any, 0, len(chunk)*3)
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+
+			rows, err := tx.QueryContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("querying posts for group recompute: %w", err)
+			}
+
+			for rows.Next() {
+				var n postNode
+				if err := rows.Scan(&n.id, &n.parentID, &n.groupID, &n.status); err != nil {
+					rows.Close()
+					return fmt.Errorf("scanning post for group recompute: %w", err)
+				}
+				allNodes[n.id] = n
+
+				if !seen[n.id] {
+					seen[n.id] = true
+					frontier = append(frontier, n.id)
+				}
+				if n.parentID > 0 && n.parentID != n.id && !seen[n.parentID] {
+					seen[n.parentID] = true
+					frontier = append(frontier, n.parentID)
+				}
+				if n.groupID > 0 && !seen[n.groupID] {
+					seen[n.groupID] = true
+					frontier = append(frontier, n.groupID)
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Also check pool_posts for any of the seen nodes:
+	if len(seen) > 0 {
+		seenSlice := make([]int64, 0, len(seen))
+		for id := range seen {
+			seenSlice = append(seenSlice, id)
+		}
+		for i := 0; i < len(seenSlice); i += 500 {
+			end := min(len(seenSlice), i+500)
+			chunk := seenSlice[i:end]
+			placeholders := strings.Repeat("?,", len(chunk))
+			placeholders = placeholders[:len(placeholders)-1]
+
+			query := fmt.Sprintf(`
+				SELECT pp2.post_id
+				FROM pool_posts pp1
+				JOIN pool_posts pp2 ON pp1.pool_id = pp2.pool_id
+				WHERE pp1.post_id IN (%s)
+			`, placeholders)
+
+			args := make([]any, len(chunk))
+			for idx, id := range chunk {
+				args[idx] = id
+			}
+
+			rows, err := tx.QueryContext(ctx, query, args...)
+			if err == nil {
+				var poolPostIDs []int64
+				for rows.Next() {
+					var pid int64
+					if err := rows.Scan(&pid); err == nil && !seen[pid] {
+						seen[pid] = true
+						poolPostIDs = append(poolPostIDs, pid)
+					}
+				}
+				rows.Close()
+
+				if len(poolPostIDs) > 0 {
+					pPlaceholders := strings.Repeat("?,", len(poolPostIDs))
+					pPlaceholders = pPlaceholders[:len(pPlaceholders)-1]
+					pQuery := fmt.Sprintf(`SELECT id, parent_id, group_id, status FROM posts WHERE id IN (%s)`, pPlaceholders)
+					pArgs := make([]any, len(poolPostIDs))
+					for idx, id := range poolPostIDs {
+						pArgs[idx] = id
+					}
+					pRows, err := tx.QueryContext(ctx, pQuery, pArgs...)
+					if err == nil {
+						for pRows.Next() {
+							var n postNode
+							if err := pRows.Scan(&n.id, &n.parentID, &n.groupID, &n.status); err == nil {
+								allNodes[n.id] = n
+							}
+						}
+						pRows.Close()
+					}
+				}
+			}
+		}
+	}
+
+	// Build adjacency graph (undirected) among allNodes
+	adj := make(map[int64][]int64, len(allNodes))
+	for id, n := range allNodes {
+		if n.parentID > 0 && n.parentID != id {
+			if _, exists := allNodes[n.parentID]; exists {
+				adj[id] = append(adj[id], n.parentID)
+				adj[n.parentID] = append(adj[n.parentID], id)
+			}
+		}
+	}
+
+	// Query pool_posts connections for allNodes
+	if len(allNodes) > 0 {
+		nodeIDs := make([]int64, 0, len(allNodes))
+		for id := range allNodes {
+			nodeIDs = append(nodeIDs, id)
+		}
+		for i := 0; i < len(nodeIDs); i += 500 {
+			end := min(len(nodeIDs), i+500)
+			chunk := nodeIDs[i:end]
+			placeholders := strings.Repeat("?,", len(chunk))
+			placeholders = placeholders[:len(placeholders)-1]
+
+			query := fmt.Sprintf(`SELECT pool_id, post_id FROM pool_posts WHERE post_id IN (%s)`, placeholders)
+			args := make([]any, len(chunk))
+			for idx, id := range chunk {
+				args[idx] = id
+			}
+			rows, err := tx.QueryContext(ctx, query, args...)
+			if err == nil {
+				poolMap := make(map[int64][]int64)
+				for rows.Next() {
+					var poolID, postID int64
+					if err := rows.Scan(&poolID, &postID); err == nil {
+						poolMap[poolID] = append(poolMap[poolID], postID)
+					}
+				}
+				rows.Close()
+				for _, pids := range poolMap {
+					for a := 0; a < len(pids); a++ {
+						for b := a + 1; b < len(pids); b++ {
+							adj[pids[a]] = append(adj[pids[a]], pids[b])
+							adj[pids[b]] = append(adj[pids[b]], pids[a])
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Find connected components using BFS
+	visitedComp := make(map[int64]bool, len(allNodes))
+	qtx := sqlcgen.New(tx)
+
+	for id := range allNodes {
+		if visitedComp[id] {
+			continue
+		}
+
+		var comp []int64
+		queue := []int64{id}
+		visitedComp[id] = true
+
+		for len(queue) > 0 {
+			curr := queue[0]
+			queue = queue[1:]
+			comp = append(comp, curr)
+
+			for _, neighbor := range adj[curr] {
+				if !visitedComp[neighbor] {
+					visitedComp[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+
+		slices.Sort(comp)
+
+		if len(comp) <= 1 {
+			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
+				GroupID:        0,
+				GroupPageCount: 1,
+				GroupIsLatest:  1,
+				ID:             id,
+			}); err != nil {
+				return fmt.Errorf("resetting single post group %d: %w", id, err)
+			}
+			continue
+		}
+
+		groupID := comp[0]
+		pageCount := int64(len(comp))
+
+		var latestID int64
+		for _, pid := range comp {
+			node := allNodes[pid]
+			if node.status == "active" {
+				if pid > latestID {
+					latestID = pid
+				}
+			}
+		}
+		if latestID == 0 {
+			latestID = comp[len(comp)-1]
+		}
+
+		for _, pid := range comp {
+			isLatest := int64(0)
+			if pid == latestID {
+				isLatest = 1
+			}
+			if err := qtx.UpdatePostGroup(ctx, sqlcgen.UpdatePostGroupParams{
+				GroupID:        groupID,
+				GroupPageCount: pageCount,
+				GroupIsLatest:  isLatest,
+				ID:             pid,
+			}); err != nil {
+				return fmt.Errorf("updating post group %d: %w", pid, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // QueryOptions configures a query against the local post index.
 type QueryOptions struct {
-	Window      Window
-	Sort        SortMode
-	Rating      hypnohub.Rating // optional: "s", "q", "e", or "" for all
-	IncludeTags []string
-	ExcludeTags []string
-	MediaType   string // optional: "image", "video", "animated", or ""
-	Limit       int
-	Offset      int
-	Now         time.Time // defaults to latest poll time (or time.Now() if empty)
+	Window         Window
+	Sort           SortMode
+	Rating         hypnohub.Rating // optional: "s", "q", "e", or "" for all
+	IncludeTags    []string
+	ExcludeTags    []string
+	MediaType      string // optional: "image", "video", "animated", or ""
+	CollapseGroups bool   // collapse multi-page sibling/pool groups into the latest post
+	Limit          int
+	Offset         int
+	Now            time.Time // defaults to latest poll time (or time.Now() if empty)
 }
 
 // QueryResult holds a page of queried posts and the total matching count.
@@ -577,8 +869,9 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		if winDur == 0 {
 			// All-time window: No score_snapshots join required!
 			total, err := s.q.CountPostsAll(ctx, sqlcgen.CountPostsAllParams{
-				Rating:    ratingStr,
-				MediaType: mediaTypeStr,
+				CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
+				Rating:         ratingStr,
+				MediaType:      mediaTypeStr,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("counting posts: %w", err)
@@ -588,12 +881,13 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 			switch sortMode {
 			case SortNew:
 				rows, err := s.q.ListPostsAllSortNew(ctx, sqlcgen.ListPostsAllSortNewParams{
-					NowUnix:   nowUnix,
-					Tau:       tau,
-					Rating:    ratingStr,
-					MediaType: mediaTypeStr,
-					Limit:     int64(limit),
-					Offset:    int64(offset),
+					NowUnix:        nowUnix,
+					Tau:            tau,
+					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
+					Rating:         ratingStr,
+					MediaType:      mediaTypeStr,
+					Limit:          int64(limit),
+					Offset:         int64(offset),
 				})
 				if err != nil {
 					return nil, fmt.Errorf("querying posts all (sort new): %w", err)
@@ -604,12 +898,13 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				}
 			case SortScore:
 				rows, err := s.q.ListPostsAllSortScore(ctx, sqlcgen.ListPostsAllSortScoreParams{
-					NowUnix:   nowUnix,
-					Tau:       tau,
-					Rating:    ratingStr,
-					MediaType: mediaTypeStr,
-					Limit:     int64(limit),
-					Offset:    int64(offset),
+					NowUnix:        nowUnix,
+					Tau:            tau,
+					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
+					Rating:         ratingStr,
+					MediaType:      mediaTypeStr,
+					Limit:          int64(limit),
+					Offset:         int64(offset),
 				})
 				if err != nil {
 					return nil, fmt.Errorf("querying posts all (sort score): %w", err)
@@ -620,12 +915,13 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				}
 			case SortHot:
 				rows, err := s.q.ListPostsAllSortHot(ctx, sqlcgen.ListPostsAllSortHotParams{
-					NowUnix:   nowUnix,
-					Tau:       tau,
-					Rating:    ratingStr,
-					MediaType: mediaTypeStr,
-					Limit:     int64(limit),
-					Offset:    int64(offset),
+					NowUnix:        nowUnix,
+					Tau:            tau,
+					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
+					Rating:         ratingStr,
+					MediaType:      mediaTypeStr,
+					Limit:          int64(limit),
+					Offset:         int64(offset),
 				})
 				if err != nil {
 					return nil, fmt.Errorf("querying posts all (sort hot): %w", err)
@@ -636,12 +932,13 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				}
 			case SortTop:
 				rows, err := s.q.ListPostsAllSortTop(ctx, sqlcgen.ListPostsAllSortTopParams{
-					NowUnix:   nowUnix,
-					Tau:       tau,
-					Rating:    ratingStr,
-					MediaType: mediaTypeStr,
-					Limit:     int64(limit),
-					Offset:    int64(offset),
+					NowUnix:        nowUnix,
+					Tau:            tau,
+					CollapseGroups: int64(boolToInt(opts.CollapseGroups)),
+					Rating:         ratingStr,
+					MediaType:      mediaTypeStr,
+					Limit:          int64(limit),
+					Offset:         int64(offset),
 				})
 				if err != nil {
 					return nil, fmt.Errorf("querying posts all (sort top): %w", err)
@@ -671,6 +968,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		total, err := s.q.CountPostsWindowed(ctx, sqlcgen.CountPostsWindowedParams{
 			WindowStartUnix: windowStartUnix,
 			NowUnix:         nowUnix,
+			CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
 			Rating:          ratingStr,
 			MediaType:       mediaTypeStr,
 		})
@@ -685,6 +983,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				WindowStartUnix: windowStartUnix,
 				NowUnix:         nowUnix,
 				Tau:             tau,
+				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
 				Rating:          ratingStr,
 				MediaType:       mediaTypeStr,
 				Limit:           int64(limit),
@@ -702,6 +1001,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				WindowStartUnix: windowStartUnix,
 				NowUnix:         nowUnix,
 				Tau:             tau,
+				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
 				Rating:          ratingStr,
 				MediaType:       mediaTypeStr,
 				Limit:           int64(limit),
@@ -719,6 +1019,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				WindowStartUnix: windowStartUnix,
 				NowUnix:         nowUnix,
 				Tau:             tau,
+				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
 				Rating:          ratingStr,
 				MediaType:       mediaTypeStr,
 				Limit:           int64(limit),
@@ -736,6 +1037,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				WindowStartUnix: windowStartUnix,
 				NowUnix:         nowUnix,
 				Tau:             tau,
+				CollapseGroups:  int64(boolToInt(opts.CollapseGroups)),
 				Rating:          ratingStr,
 				MediaType:       mediaTypeStr,
 				Limit:           int64(limit),
@@ -766,6 +1068,10 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 		whereClauses = []string{"p.status = 'active'"}
 		whereArgs    []any
 	)
+
+	if opts.CollapseGroups {
+		whereClauses = append(whereClauses, "p.group_is_latest = 1")
+	}
 
 	if winDur > 0 {
 		whereClauses = append(whereClauses, "(p.created_at >= ? OR (b.start_score IS NOT NULL AND p.score > b.start_score))")
@@ -834,6 +1140,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 				p.sample_url, p.sample_width, p.sample_height,
 				p.preview_url, p.preview_width, p.preview_height,
 				p.tags_raw, p.first_seen_at, p.last_polled_at,
+				p.group_id, p.group_is_latest, p.group_page_count,
 				0 AS baseline_score,
 				p.score AS score_delta,
 				MAX(0.1, (? - p.created_at) / 3600.0) AS window_hours,
@@ -921,6 +1228,7 @@ func (s *Store) QueryPosts(ctx context.Context, opts QueryOptions) (*QueryResult
 			p.sample_url, p.sample_width, p.sample_height,
 			p.preview_url, p.preview_width, p.preview_height,
 			p.tags_raw, p.first_seen_at, p.last_polled_at,
+			p.group_id, p.group_is_latest, p.group_page_count,
 			%s AS baseline_score,
 			%s AS score_delta,
 			%s AS window_hours,
@@ -1024,6 +1332,27 @@ func (s *Store) GetPost(ctx context.Context, id hypnohub.PostID) (*IndexedPost, 
 	}
 
 	return &post, history, nil
+}
+
+// GetGroupPosts retrieves all active posts belonging to groupID ordered by ID ASC (page order 1..N).
+func (s *Store) GetGroupPosts(ctx context.Context, groupID hypnohub.PostID) ([]IndexedPost, error) {
+	if groupID <= 0 {
+		return nil, nil
+	}
+	refNow := s.latestReferenceTime(ctx).UTC()
+	nowUnix := refNow.Unix()
+	const tau = 2.0
+
+	posts, err := s.q.ListGroupPosts(ctx, int64(groupID))
+	if err != nil {
+		return nil, fmt.Errorf("listing group posts %d: %w", groupID, err)
+	}
+
+	result := make([]IndexedPost, len(posts))
+	for i, p := range posts {
+		result[i] = postToIndexed(p, nowUnix, tau)
+	}
+	return result, nil
 }
 
 // SearchTags searches local indexed tags by prefix or substring, ordered by post count descending.
@@ -1172,6 +1501,9 @@ func postToIndexed(p sqlcgen.Post, nowUnix int64, tau float64) IndexedPost {
 		Tags:          strings.Fields(p.TagsRaw),
 		FirstSeenAt:   time.Unix(p.FirstSeenAt, 0).UTC(),
 		LastPolledAt:  time.Unix(p.LastPolledAt, 0).UTC(),
+		GroupID:        hypnohub.PostID(p.GroupID),
+		GroupPageCount: int(p.GroupPageCount),
+		GroupIsLatest:  p.GroupIsLatest != 0,
 		BaselineScore: 0,
 		ScoreDelta:    int(p.Score),
 		WindowHours:   math.Round(effHours*100) / 100,
@@ -1192,6 +1524,7 @@ func newIndexedPost(
 	previewURL string, previewWidth, previewHeight int64,
 	tagsRaw string,
 	firstSeenAt, lastPolledAt int64,
+	groupID, groupIsLatest, groupPageCount int64,
 	baselineScore, scoreDelta int64,
 	windowHours, scoreRate, hotScore float64,
 ) IndexedPost {
@@ -1222,6 +1555,9 @@ func newIndexedPost(
 		Tags:          strings.Fields(tagsRaw),
 		FirstSeenAt:   time.Unix(firstSeenAt, 0).UTC(),
 		LastPolledAt:  time.Unix(lastPolledAt, 0).UTC(),
+		GroupID:        hypnohub.PostID(groupID),
+		GroupIsLatest:  groupIsLatest != 0,
+		GroupPageCount: int(groupPageCount),
 		BaselineScore: int(baselineScore),
 		ScoreDelta:    int(scoreDelta),
 		WindowHours:   math.Round(windowHours*100) / 100,
@@ -1238,6 +1574,7 @@ func rowToIndexedPostAllSortNew(r sqlcgen.ListPostsAllSortNewRow) IndexedPost {
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1250,6 +1587,7 @@ func rowToIndexedPostAllSortScore(r sqlcgen.ListPostsAllSortScoreRow) IndexedPos
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1262,6 +1600,7 @@ func rowToIndexedPostAllSortHot(r sqlcgen.ListPostsAllSortHotRow) IndexedPost {
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1274,6 +1613,7 @@ func rowToIndexedPostAllSortTop(r sqlcgen.ListPostsAllSortTopRow) IndexedPost {
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1286,6 +1626,7 @@ func rowToIndexedPostWindowedSortHot(r sqlcgen.ListPostsWindowedSortHotRow) Inde
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1298,6 +1639,7 @@ func rowToIndexedPostWindowedSortTop(r sqlcgen.ListPostsWindowedSortTopRow) Inde
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1310,6 +1652,7 @@ func rowToIndexedPostWindowedSortNew(r sqlcgen.ListPostsWindowedSortNewRow) Inde
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1322,6 +1665,7 @@ func rowToIndexedPostWindowedSortScore(r sqlcgen.ListPostsWindowedSortScoreRow) 
 		r.SampleURL, r.SampleWidth, r.SampleHeight,
 		r.PreviewURL, r.PreviewWidth, r.PreviewHeight,
 		r.TagsRaw, r.FirstSeenAt, r.LastPolledAt,
+		r.GroupID, r.GroupIsLatest, r.GroupPageCount,
 		r.BaselineScore, r.ScoreDelta, r.WindowHours, r.ScoreRate, r.HotScore,
 	)
 }
@@ -1338,6 +1682,7 @@ func scanIndexedPost(scanner rowScanner) (IndexedPost, error) {
 		rating                                  string
 		hasNotes, hasComments, hasChildren      int
 		tagsRaw                                 string
+		groupID, groupIsLatest, groupPageCount  int64
 		windowHours, scoreRate, hotScore        float64
 	)
 
@@ -1348,6 +1693,7 @@ func scanIndexedPost(scanner rowScanner) (IndexedPost, error) {
 		&p.SampleURL, &p.SampleWidth, &p.SampleHeight,
 		&p.PreviewURL, &p.PreviewWidth, &p.PreviewHeight,
 		&tagsRaw, &firstSeen, &polled,
+		&groupID, &groupIsLatest, &groupPageCount,
 		&p.BaselineScore, &p.ScoreDelta, &windowHours, &scoreRate, &hotScore,
 	)
 	if err != nil {
@@ -1356,6 +1702,9 @@ func scanIndexedPost(scanner rowScanner) (IndexedPost, error) {
 
 	p.ID = hypnohub.PostID(id)
 	p.ParentID = hypnohub.PostID(parentID)
+	p.GroupID = hypnohub.PostID(groupID)
+	p.GroupIsLatest = groupIsLatest != 0
+	p.GroupPageCount = int(groupPageCount)
 	p.CreatedAt = time.Unix(createdAt, 0).UTC()
 	p.ChangedAt = time.Unix(changedAt, 0).UTC()
 	p.Rating = hypnohub.Rating(rating).Normalize()

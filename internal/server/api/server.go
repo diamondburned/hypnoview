@@ -102,8 +102,9 @@ type GetPostInput struct {
 
 // PostDetailResponse contains a single indexed post and its historical score snapshots.
 type PostDetailResponse struct {
-	Post      index.IndexedPost  `json:"post" doc:"Indexed post metadata and URLs."`
-	Snapshots []index.ScorePoint `json:"snapshots" doc:"Recorded 2-hour score snapshots for this post."`
+	Post       index.IndexedPost   `json:"post" doc:"Indexed post metadata and URLs."`
+	Snapshots  []index.ScorePoint  `json:"snapshots" doc:"Recorded 2-hour score snapshots for this post."`
+	GroupPosts []index.IndexedPost `json:"group_posts,omitempty" doc:"All posts in this group/pool in page order."`
 }
 
 // GetPostOutput wraps PostDetailResponse.
@@ -223,10 +224,18 @@ func (s *Server) getPost(ctx context.Context, input *GetPostInput) (*GetPostOutp
 		return nil, huma.Error500InternalServerError(err.Error())
 	}
 
+	var groupPosts []index.IndexedPost
+	if post.GroupID > 0 && post.GroupPageCount > 1 {
+		if gps, err := s.store.GetGroupPosts(ctx, post.GroupID); err == nil && len(gps) > 1 {
+			groupPosts = gps
+		}
+	}
+
 	return &GetPostOutput{
 		Body: PostDetailResponse{
-			Post:      *post,
-			Snapshots: snapshots,
+			Post:       *post,
+			Snapshots:  snapshots,
+			GroupPosts: groupPosts,
 		},
 	}, nil
 }

@@ -88,6 +88,9 @@ var tmplFuncs = template.FuncMap{
 	"thumbURL":    thumbURL,
 	"thumbWidth":  thumbWidth,
 	"thumbHeight": thumbHeight,
+	"add": func(a, b int) int {
+		return a + b
+	},
 	"json": func(v any) template.JS {
 		b, _ := json.Marshal(v)
 		return template.JS(b)
@@ -419,14 +422,18 @@ func (d indexPageData) urlWithTags(newTagsQuery string) string {
 }
 
 type postPageData struct {
-	Title      string
-	ActiveNav  string
-	Post       index.IndexedPost
-	Snapshots  []index.ScorePoint
-	Stats      index.Stats
-	BackURL    string
-	RobotsMeta string
-	OpenGraph  OpenGraph
+	Title           string
+	ActiveNav       string
+	Post            index.IndexedPost
+	Snapshots       []index.ScorePoint
+	Stats           index.Stats
+	BackURL         string
+	GroupPosts      []index.IndexedPost
+	GroupPageIndex  int
+	PrevGroupPostID hypnohub.PostID
+	NextGroupPostID hypnohub.PostID
+	RobotsMeta      string
+	OpenGraph       OpenGraph
 }
 
 func (s *Server) handleTagSuggestions(w http.ResponseWriter, r *http.Request) {
@@ -660,14 +667,15 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 	}
 
 	res, err := s.store.QueryPosts(ctx, index.QueryOptions{
-		Window:      index.Window(window),
-		Sort:        sortMode,
-		Rating:      hypnohub.Rating(rating),
-		MediaType:   media,
-		IncludeTags: inc,
-		ExcludeTags: exc,
-		Limit:       limit,
-		Offset:      offset,
+		Window:         index.Window(window),
+		Sort:           sortMode,
+		Rating:         hypnohub.Rating(rating),
+		MediaType:      media,
+		CollapseGroups: mode == "browse",
+		IncludeTags:    inc,
+		ExcludeTags:    exc,
+		Limit:          limit,
+		Offset:         offset,
 	})
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to query posts for index page", "error", err)
@@ -886,10 +894,37 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backURL := "/"
-	if ref := r.Header.Get("Referer"); ref != "" {
+	if qBack := r.URL.Query().Get("back"); qBack != "" && strings.HasPrefix(qBack, "/") && !strings.HasPrefix(qBack, "/posts/") {
+		backURL = qBack
+	} else if ref := r.Header.Get("Referer"); ref != "" {
 		if u, err := url.Parse(ref); err == nil && (u.Host == "" || u.Host == r.Host) {
-			if uri := u.RequestURI(); uri != "" {
+			if uri := u.RequestURI(); uri != "" && !strings.HasPrefix(u.Path, "/posts/") {
 				backURL = uri
+			}
+		}
+	}
+
+	var (
+		groupPosts     []index.IndexedPost
+		groupPageIndex int
+		prevGroupID    hypnohub.PostID
+		nextGroupID    hypnohub.PostID
+	)
+	if post.GroupID > 0 && post.GroupPageCount > 1 {
+		gps, err := s.store.GetGroupPosts(ctx, post.GroupID)
+		if err == nil && len(gps) > 1 {
+			groupPosts = gps
+			for i, gp := range gps {
+				if gp.ID == post.ID {
+					groupPageIndex = i + 1
+					if i > 0 {
+						prevGroupID = gps[i-1].ID
+					}
+					if i < len(gps)-1 {
+						nextGroupID = gps[i+1].ID
+					}
+					break
+				}
 			}
 		}
 	}
@@ -926,13 +961,17 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := postPageData{
-		Title:      fmt.Sprintf("Post #%d — Hypnogaze", post.ID),
-		Post:       *post,
-		Snapshots:  snapshots,
-		Stats:      *stats,
-		BackURL:    backURL,
-		RobotsMeta: "index, follow",
-		OpenGraph:  postOG,
+		Title:           fmt.Sprintf("Post #%d — Hypnogaze", post.ID),
+		Post:            *post,
+		Snapshots:       snapshots,
+		Stats:           *stats,
+		BackURL:         backURL,
+		GroupPosts:      groupPosts,
+		GroupPageIndex:  groupPageIndex,
+		PrevGroupPostID: prevGroupID,
+		NextGroupPostID: nextGroupID,
+		RobotsMeta:      "index, follow",
+		OpenGraph:       postOG,
 	}
 
 	tmpl, err := s.getPostTemplate()

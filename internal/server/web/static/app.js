@@ -740,6 +740,10 @@ if (lightbox && cards.length > 0) {
 	const lbTags = document.getElementById("lb-tags");
 	const lbStage = document.getElementById("lightbox-stage");
 	const lbZoomToggle = document.getElementById("lb-zoom-toggle");
+	const lbGroupBadge = document.getElementById("lb-group-badge");
+	const lbGroupBadgeVal = document.getElementById("lb-group-badge-val");
+	const lbGroupNav = document.getElementById("lb-group-nav");
+	const groupPostsCache = new Map();
 
 	let currentIndex = 0;
 	let preferHD = currentSettings.preferHD ?? true;
@@ -959,13 +963,8 @@ if (lightbox && cards.length > 0) {
 		}
 	});
 
-	function renderLightbox(index) {
-		if (index < 0 || index >= cards.length) return;
+	function renderLightboxPostData(d, thumbSrc) {
 		resetZoom();
-		currentIndex = index;
-		const card = cards[index];
-		const d = card.dataset;
-
 		lbPostLink.href = `/posts/${d.id}`;
 		lbPostLink.textContent = `#${d.id}`;
 		lbScore.textContent = `★ ${d.score}`;
@@ -981,11 +980,9 @@ if (lightbox && cards.length > 0) {
 				lbRate.style.display = "none";
 			}
 		}
-		lbAge.textContent = `${d.created} · ${d.width}×${d.height} ${d.ext.toUpperCase()}`;
+		const metaAge = d.created ? `${d.created} · ` : "";
+		lbAge.textContent = `${metaAge}${d.width}×${d.height} ${(d.ext || "").toUpperCase()}`;
 		lbHypnohubLink.href = `https://hypnohub.net/index.php?page=post&s=view&id=${d.id}`;
-
-		lbPrev.style.visibility = index > 0 ? "visible" : "hidden";
-		lbNext.style.visibility = index < cards.length - 1 ? "visible" : "hidden";
 
 		lbMediaWrap.innerHTML = "";
 		const ext = (d.ext || "").toLowerCase();
@@ -994,7 +991,7 @@ if (lightbox && cards.length > 0) {
 			lbHdToggle.hidden = true;
 			const video = document.createElement("video");
 			video.src = d.fileUrl;
-			const cachedThumb = card.querySelector("img")?.currentSrc || d.sampleUrl || d.previewUrl;
+			const cachedThumb = thumbSrc || d.sampleUrl || d.previewUrl;
 			if (cachedThumb) video.poster = cachedThumb;
 			video.controls = true;
 			video.autoplay = true;
@@ -1008,7 +1005,7 @@ if (lightbox && cards.length > 0) {
 			lbHdToggle.textContent = preferHD ? "HD" : "Sample";
 
 			const targetURL = preferHD || ext === "gif" ? d.fileUrl : (d.sampleUrl || d.fileUrl);
-			const cachedThumb = card.querySelector("img")?.currentSrc || d.sampleUrl || d.previewUrl;
+			const cachedThumb = thumbSrc || d.sampleUrl || d.previewUrl;
 
 			const container = document.createElement("div");
 			container.className = "lb-progressive-container";
@@ -1034,7 +1031,6 @@ if (lightbox && cards.length > 0) {
 			fullImg.alt = `Post #${d.id}`;
 
 			const onReady = () => {
-				if (currentIndex !== index) return;
 				loader.remove();
 				fullImg.classList.add("is-loaded");
 				previewImg.classList.add("is-hidden");
@@ -1050,7 +1046,6 @@ if (lightbox && cards.length > 0) {
 					fullImg.onload = onReady;
 				});
 				fullImg.onerror = () => {
-					if (currentIndex !== index) return;
 					loader.remove();
 				};
 			}
@@ -1060,13 +1055,89 @@ if (lightbox && cards.length > 0) {
 
 		// Render clickable tags
 		lbTags.innerHTML = "";
-		const tags = (d.tags || "").split(/\s+/).filter(Boolean);
+		const tags = Array.isArray(d.tags) ? d.tags : (d.tags || "").split(/\s+/).filter(Boolean);
 		for (const tag of tags) {
 			const a = document.createElement("a");
 			a.href = `/?tags=${encodeURIComponent(tag)}`;
 			a.className = "tag-chip";
 			a.textContent = tag;
 			lbTags.appendChild(a);
+		}
+	}
+
+	function renderLightbox(index) {
+		if (index < 0 || index >= cards.length) return;
+		currentIndex = index;
+		const card = cards[index];
+		const d = card.dataset;
+		const thumbSrc = card.querySelector("img")?.currentSrc || d.sampleUrl || d.previewUrl;
+
+		lbPrev.style.visibility = index > 0 ? "visible" : "hidden";
+		lbNext.style.visibility = index < cards.length - 1 ? "visible" : "hidden";
+
+		renderLightboxPostData(d, thumbSrc);
+
+		const groupCount = parseInt(d.groupCount, 10) || 1;
+		if (lbGroupBadge) {
+			if (groupCount > 1) {
+				lbGroupBadge.style.display = "inline-flex";
+				if (lbGroupBadgeVal) lbGroupBadgeVal.textContent = String(groupCount);
+			} else {
+				lbGroupBadge.style.display = "none";
+			}
+		}
+
+		if (lbGroupNav) {
+			if (groupCount <= 1) {
+				lbGroupNav.style.display = "none";
+				lbGroupNav.innerHTML = "";
+			} else {
+				lbGroupNav.style.display = "flex";
+				const renderPills = (groupPosts, activeId) => {
+					lbGroupNav.innerHTML = "";
+					groupPosts.forEach((gp, gIdx) => {
+						const pill = document.createElement("button");
+						pill.type = "button";
+						pill.className = "lb-page-pill" + (gp.id === activeId ? " active" : "");
+						pill.textContent = String(gIdx + 1);
+						pill.title = `Page ${gIdx + 1} (Post #${gp.id})`;
+						pill.addEventListener("click", (e) => {
+							e.stopPropagation();
+							lbGroupNav.querySelectorAll(".lb-page-pill").forEach(p => p.classList.remove("active"));
+							pill.classList.add("active");
+							renderLightboxPostData({
+								id: gp.id,
+								score: gp.score,
+								hot: 0,
+								created: "",
+								width: gp.width,
+								height: gp.height,
+								ext: gp.file_ext,
+								fileUrl: gp.file_url,
+								sampleUrl: gp.sample_url,
+								previewUrl: gp.preview_url,
+								tags: gp.tags
+							}, gp.sample_url || gp.preview_url);
+						});
+						lbGroupNav.appendChild(pill);
+					});
+				};
+
+				if (groupPostsCache.has(d.id)) {
+					renderPills(groupPostsCache.get(d.id), parseInt(d.id, 10));
+				} else {
+					fetch(`/api/v1/posts/${d.id}`)
+						.then(r => r.json())
+						.then(data => {
+							if (currentIndex !== index) return;
+							if (data?.group_posts && data.group_posts.length > 1) {
+								groupPostsCache.set(d.id, data.group_posts);
+								renderPills(data.group_posts, parseInt(d.id, 10));
+							}
+						})
+						.catch(() => {});
+				}
+			}
 		}
 	}
 
@@ -1187,42 +1258,71 @@ if (lightbox && cards.length > 0) {
 }
 
 // Post Detail Page progressive preloading & inline HD toggle
-const detailImg = document.getElementById("detail-img");
-const detailHdToggle = document.getElementById("detail-hd-toggle");
-if (detailImg) {
-	const fullSrc = detailImg.dataset.fullSrc;
-	if (fullSrc && fullSrc !== detailImg.src && !detailImg.src.endsWith(".gif")) {
-		const fullPreload = new Image();
-		fullPreload.referrerPolicy = "no-referrer";
-		fullPreload.src = fullSrc;
-		fullPreload.decode?.().then(() => {
-			if (detailImg) {
-				detailImg.src = fullSrc;
-			}
-		}).catch(() => {
-			fullPreload.onload = () => {
-				if (detailImg) {
-					detailImg.src = fullSrc;
-				}
-			};
-		});
-	}
-
-	if (detailHdToggle) {
-		let isHD = false;
-		const sampleSrc = detailImg.src;
-		const hdSrc = detailImg.dataset.hdSrc || fullSrc;
-		function toggleDetailHD() {
-			isHD = !isHD;
-			detailImg.src = isHD ? hdSrc : sampleSrc;
-			detailHdToggle.textContent = isHD ? "Switch to Sample (Fast)" : "Switch to HD Original";
-			detailHdToggle.classList.toggle("active", isHD);
+function initPostDetail() {
+	const detailImg = document.getElementById("detail-img");
+	const detailHdToggle = document.getElementById("detail-hd-toggle");
+	if (detailImg) {
+		const fullSrc = detailImg.dataset.fullSrc;
+		if (fullSrc && fullSrc !== detailImg.src && !detailImg.src.endsWith(".gif")) {
+			const fullPreload = new Image();
+			fullPreload.referrerPolicy = "no-referrer";
+			fullPreload.src = fullSrc;
+			fullPreload.decode?.().then(() => {
+				const current = document.getElementById("detail-img");
+				if (current) current.src = fullSrc;
+			}).catch(() => {
+				fullPreload.onload = () => {
+					const current = document.getElementById("detail-img");
+					if (current) current.src = fullSrc;
+				};
+			});
 		}
-		detailHdToggle.addEventListener("click", toggleDetailHD);
-		detailImg.style.cursor = "zoom-in";
-		detailImg.addEventListener("click", toggleDetailHD);
+
+		if (detailHdToggle) {
+			let isHD = false;
+			const sampleSrc = detailImg.src;
+			const hdSrc = detailImg.dataset.hdSrc || fullSrc;
+			function toggleDetailHD() {
+				isHD = !isHD;
+				detailImg.src = isHD ? hdSrc : sampleSrc;
+				detailHdToggle.textContent = isHD ? "Switch to Sample (Fast)" : "Switch to HD Original";
+				detailHdToggle.classList.toggle("active", isHD);
+			}
+			detailHdToggle.onclick = toggleDetailHD;
+			detailImg.style.cursor = "zoom-in";
+			detailImg.onclick = toggleDetailHD;
+		}
 	}
 }
+
+initPostDetail();
+
+document.body.addEventListener("htmx:afterSwap", (e) => {
+	if (e.detail?.target?.id === "post-detail" || document.getElementById("post-detail")) {
+		initPostDetail();
+	}
+});
+
+// Arrow key navigation on post detail page
+window.addEventListener("keydown", (e) => {
+	if (document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA")) return;
+	const lb = document.getElementById("lightbox");
+	if (lb && lb.open) return; // handled by lightbox
+
+	if (e.key === "ArrowLeft") {
+		const prevBtn = document.getElementById("group-prev-btn");
+		if (prevBtn) {
+			e.preventDefault();
+			prevBtn.click();
+		}
+	} else if (e.key === "ArrowRight") {
+		const nextBtn = document.getElementById("group-next-btn");
+		if (nextBtn) {
+			e.preventDefault();
+			nextBtn.click();
+		}
+	}
+});
 
 // Reusable [data-tooltip] tap/click toggle for touch & mobile devices
 document.querySelectorAll("[data-tooltip]").forEach((el) => {

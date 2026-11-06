@@ -1,11 +1,73 @@
 {{ define "content" }}
-<div class="post-detail">
+<div class="post-detail" id="post-detail">
 	<div class="post-detail-nav">
 		<a href="{{ .BackURL }}" class="page-btn">← Back to Feed</a>
 	</div>
 
 	<div class="post-detail-grid">
 		<div class="post-media-column">
+			{{ if gt (len .GroupPosts) 1 }}
+			<div class="post-group-switcher" id="post-group-switcher" aria-label="Page navigation">
+				<div class="group-switcher-header">
+					<span class="group-switcher-title">
+						<span class="material-symbols-rounded" aria-hidden="true">filter_none</span>
+						<span>Page {{ .GroupPageIndex }} of {{ len .GroupPosts }}</span>
+					</span>
+					<div class="group-switcher-nav">
+						{{ if .PrevGroupPostID }}
+						<a
+							href="/posts/{{ .PrevGroupPostID }}?back={{ urlquery .BackURL }}"
+							id="group-prev-btn"
+							class="page-btn group-nav-btn"
+							title="Previous page (Left Arrow)"
+							hx-get="/posts/{{ .PrevGroupPostID }}?back={{ urlquery .BackURL }}"
+							hx-target="#post-detail"
+							hx-select="#post-detail"
+							hx-swap="outerHTML show:none"
+							hx-push-url="true"
+						>← Prev</a>
+						{{ else }}
+						<span class="page-btn group-nav-btn disabled" aria-disabled="true">← Prev</span>
+						{{ end }}
+
+						{{ if .NextGroupPostID }}
+						<a
+							href="/posts/{{ .NextGroupPostID }}?back={{ urlquery .BackURL }}"
+							id="group-next-btn"
+							class="page-btn group-nav-btn"
+							title="Next page (Right Arrow)"
+							hx-get="/posts/{{ .NextGroupPostID }}?back={{ urlquery .BackURL }}"
+							hx-target="#post-detail"
+							hx-select="#post-detail"
+							hx-swap="outerHTML show:none"
+							hx-push-url="true"
+						>Next →</a>
+						{{ else }}
+						<span class="page-btn group-nav-btn disabled" aria-disabled="true">Next →</span>
+						{{ end }}
+					</div>
+				</div>
+
+				<div class="group-pills-row" role="tablist" aria-label="Pages">
+					{{ range $idx, $gp := .GroupPosts }}
+					{{ $pageNo := add $idx 1 }}
+					{{ $isActive := eq $gp.ID $.Post.ID }}
+					<a
+						href="/posts/{{ $gp.ID }}?back={{ urlquery $.BackURL }}"
+						class="group-page-pill {{ if $isActive }}active{{ end }}"
+						title="Page {{ $pageNo }}"
+						{{ if $isActive }}aria-current="page"{{ end }}
+						hx-get="/posts/{{ $gp.ID }}?back={{ urlquery $.BackURL }}"
+						hx-target="#post-detail"
+						hx-select="#post-detail"
+						hx-swap="outerHTML show:none"
+						hx-push-url="true"
+					>{{ $pageNo }}</a>
+					{{ end }}
+				</div>
+			</div>
+			{{ end }}
+
 			<div class="post-media-box">
 				{{ if isVideoExt .Post.FileExt }}
 				<video

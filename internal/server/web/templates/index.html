@@ -136,6 +136,8 @@
 				data-ext="{{ $p.FileExt }}"
 				data-width="{{ $p.Width }}"
 				data-height="{{ $p.Height }}"
+				data-group-id="{{ $p.GroupID }}"
+				data-group-count="{{ $p.GroupPageCount }}"
 				data-file-url="{{ $p.FileURL }}"
 				data-sample-url="{{ thumbURL $p }}"
 				data-preview-url="{{ $p.PreviewURL }}"
@@ -152,23 +154,27 @@
 						decoding="async"
 						referrerpolicy="no-referrer"
 					/>
-					{{ if isVideoExt $p.FileExt }}
+					{{ if or (gt $p.GroupPageCount 1) (isAnimatedExt $p.FileExt) }}
 					<div class="card-badges-top">
+						{{ if gt $p.GroupPageCount 1 }}
+						<span class="badge badge-pages" title="{{ $p.GroupPageCount }} pages" aria-label="{{ $p.GroupPageCount }} pages">
+							<span class="material-symbols-rounded" aria-hidden="true">filter_none</span>
+							<span>{{ $p.GroupPageCount }}</span>
+						</span>
+						{{ end }}
+						{{ if isVideoExt $p.FileExt }}
 						<span class="badge badge-media badge-icon" title="{{ upper $p.FileExt }} Video" aria-label="{{ upper $p.FileExt }} Video">
 							<span class="material-symbols-rounded" aria-hidden="true">videocam</span>
 						</span>
-					</div>
-					{{ else if eq (lower $p.FileExt) "gif" }}
-					<div class="card-badges-top">
+						{{ else if eq (lower $p.FileExt) "gif" }}
 						<span class="badge badge-media badge-icon" title="Animated GIF" aria-label="Animated GIF">
 							<span class="material-symbols-rounded" aria-hidden="true">motion_photos_on</span>
 						</span>
-					</div>
-					{{ else if isAnimatedExt $p.FileExt }}
-					<div class="card-badges-top">
+						{{ else if isAnimatedExt $p.FileExt }}
 						<span class="badge badge-media badge-icon" title="{{ upper $p.FileExt }}">
 							<span class="material-symbols-rounded" aria-hidden="true">motion_photos_on</span>
 						</span>
+						{{ end }}
 					</div>
 					{{ end }}
 				</a>
@@ -248,6 +254,10 @@
 					<span id="lb-hot-val">0</span>
 				</span>
 				<span id="lb-age" class="lb-meta"></span>
+				<span id="lb-group-badge" class="badge badge-pages" style="display: none;">
+					<span class="material-symbols-rounded" aria-hidden="true">filter_none</span>
+					<span id="lb-group-badge-val">0</span>
+				</span>
 			</div>
 			<div class="lightbox-actions">
 				<button type="button" id="lb-zoom-toggle" class="lb-btn" title="Toggle Zoom (or click on image)">Fit</button>
@@ -256,6 +266,8 @@
 				<button type="button" id="lb-close" class="lb-btn lb-close" aria-label="Close">✕</button>
 			</div>
 		</header>
+
+		<div id="lb-group-nav" class="lightbox-group-nav" style="display: none;"></div>
 
 		<div class="lightbox-stage" id="lightbox-stage">
 			<button type="button" id="lb-prev" class="lb-nav lb-prev" aria-label="Previous post">‹</button>

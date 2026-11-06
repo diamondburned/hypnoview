@@ -730,3 +730,255 @@ func TestOpenCorruptedDatabaseBackup(t *testing.T) {
 		t.Errorf("expected 0 posts on fresh database, got %d", stats.TotalPosts)
 	}
 }
+
+func TestPostGroupingLinearAndCircular(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 11, 5, 20, 0, 0, 0, time.UTC)
+
+	// 1. Linear Chain: 201 <- 202 <- 203
+	linearPosts := []hypnohub.Post{
+		{
+			ID:          201,
+			Score:       10,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "comic page_1 hypnosis",
+			FileURL:     "https://hypnohub.net/images/201.jpg",
+			SampleURL:   "https://hypnohub.net/samples/201.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/201.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-3 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-3 * time.Hour).Unix()),
+			HasChildren: true,
+			Status:      "active",
+		},
+		{
+			ID:          202,
+			ParentID:    201,
+			Score:       15,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "comic page_2 hypnosis",
+			FileURL:     "https://hypnohub.net/images/202.jpg",
+			SampleURL:   "https://hypnohub.net/samples/202.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/202.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-2 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-2 * time.Hour).Unix()),
+			HasChildren: true,
+			Status:      "active",
+		},
+		{
+			ID:          203,
+			ParentID:    202,
+			Score:       25,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "comic page_3 hypnosis",
+			FileURL:     "https://hypnohub.net/images/203.jpg",
+			SampleURL:   "https://hypnohub.net/samples/203.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/203.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-1 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-1 * time.Hour).Unix()),
+			Status:      "active",
+		},
+	}
+
+	if _, err := store.IngestBatch(ctx, linearPosts, now, now, now, 1, false); err != nil {
+		t.Fatalf("failed to ingest linear posts: %v", err)
+	}
+
+	p201, _, err := store.GetPost(ctx, 201)
+	if err != nil {
+		t.Fatalf("getting post 201: %v", err)
+	}
+	p202, _, err := store.GetPost(ctx, 202)
+	if err != nil {
+		t.Fatalf("getting post 202: %v", err)
+	}
+	p203, _, err := store.GetPost(ctx, 203)
+	if err != nil {
+		t.Fatalf("getting post 203: %v", err)
+	}
+
+	for _, p := range []*IndexedPost{p201, p202, p203} {
+		if p.GroupID != 201 {
+			t.Errorf("post %d: expected GroupID 201, got %d", p.ID, p.GroupID)
+		}
+		if p.GroupPageCount != 3 {
+			t.Errorf("post %d: expected GroupPageCount 3, got %d", p.ID, p.GroupPageCount)
+		}
+	}
+	if p201.GroupIsLatest || p202.GroupIsLatest {
+		t.Errorf("post 201 or 202 incorrectly marked as latest")
+	}
+	if !p203.GroupIsLatest {
+		t.Errorf("post 203 expected to be marked as latest")
+	}
+
+	groupPosts, err := store.GetGroupPosts(ctx, 201)
+	if err != nil {
+		t.Fatalf("GetGroupPosts(201): %v", err)
+	}
+	if len(groupPosts) != 3 {
+		t.Fatalf("expected 3 group posts, got %d", len(groupPosts))
+	}
+	if groupPosts[0].ID != 201 || groupPosts[1].ID != 202 || groupPosts[2].ID != 203 {
+		t.Errorf("unexpected group posts order: [%d, %d, %d]", groupPosts[0].ID, groupPosts[1].ID, groupPosts[2].ID)
+	}
+
+	// Collapsed browse query returns only latest (203)
+	resCollapsed, err := store.QueryPosts(ctx, QueryOptions{
+		Window:         WindowAllTime,
+		Sort:           SortNew,
+		CollapseGroups: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("QueryPosts collapsed: %v", err)
+	}
+	if len(resCollapsed.Posts) != 1 || resCollapsed.Posts[0].ID != 203 {
+		t.Errorf("expected 1 collapsed post (203), got %d posts", len(resCollapsed.Posts))
+	}
+	if resCollapsed.Posts[0].GroupPageCount != 3 {
+		t.Errorf("expected collapsed post 203 to have GroupPageCount 3, got %d", resCollapsed.Posts[0].GroupPageCount)
+	}
+
+	// 2. Circular Sibling Loop: 301 -> 302 -> 303 -> 301
+	circularPosts := []hypnohub.Post{
+		{
+			ID:          301,
+			ParentID:    303,
+			Score:       5,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "manga cycle_1 hypnosis",
+			FileURL:     "https://hypnohub.net/images/301.jpg",
+			SampleURL:   "https://hypnohub.net/samples/301.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/301.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-6 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-6 * time.Hour).Unix()),
+			HasChildren: true,
+			Status:      "active",
+		},
+		{
+			ID:          302,
+			ParentID:    301,
+			Score:       8,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "manga cycle_2 hypnosis",
+			FileURL:     "https://hypnohub.net/images/302.jpg",
+			SampleURL:   "https://hypnohub.net/samples/302.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/302.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-5 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-5 * time.Hour).Unix()),
+			HasChildren: true,
+			Status:      "active",
+		},
+		{
+			ID:          303,
+			ParentID:    302,
+			Score:       12,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "manga cycle_3 hypnosis",
+			FileURL:     "https://hypnohub.net/images/303.jpg",
+			SampleURL:   "https://hypnohub.net/samples/303.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/303.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-4 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-4 * time.Hour).Unix()),
+			HasChildren: true,
+			Status:      "active",
+		},
+	}
+
+	if _, err := store.IngestBatch(ctx, circularPosts, now, now, now, 1, false); err != nil {
+		t.Fatalf("failed to ingest circular posts: %v", err)
+	}
+
+	p301, _, err := store.GetPost(ctx, 301)
+	if err != nil {
+		t.Fatalf("getting post 301: %v", err)
+	}
+	p302, _, err := store.GetPost(ctx, 302)
+	if err != nil {
+		t.Fatalf("getting post 302: %v", err)
+	}
+	p303, _, err := store.GetPost(ctx, 303)
+	if err != nil {
+		t.Fatalf("getting post 303: %v", err)
+	}
+
+	for _, p := range []*IndexedPost{p301, p302, p303} {
+		if p.GroupID != 301 {
+			t.Errorf("circular post %d: expected GroupID 301, got %d", p.ID, p.GroupID)
+		}
+		if p.GroupPageCount != 3 {
+			t.Errorf("circular post %d: expected GroupPageCount 3, got %d", p.ID, p.GroupPageCount)
+		}
+	}
+	if p301.GroupIsLatest || p302.GroupIsLatest {
+		t.Errorf("circular post 301 or 302 incorrectly marked as latest")
+	}
+	if !p303.GroupIsLatest {
+		t.Errorf("circular post 303 expected to be marked as latest")
+	}
+
+	groupPostsCircular, err := store.GetGroupPosts(ctx, 301)
+	if err != nil {
+		t.Fatalf("GetGroupPosts(301): %v", err)
+	}
+	if len(groupPostsCircular) != 3 {
+		t.Fatalf("expected 3 circular group posts, got %d", len(groupPostsCircular))
+	}
+	if groupPostsCircular[0].ID != 301 || groupPostsCircular[1].ID != 302 || groupPostsCircular[2].ID != 303 {
+		t.Errorf("unexpected circular group posts order: [%d, %d, %d]", groupPostsCircular[0].ID, groupPostsCircular[1].ID, groupPostsCircular[2].ID)
+	}
+
+	// 3. Self-Loop: 401.ParentID = 401
+	selfLoopPost := []hypnohub.Post{
+		{
+			ID:          401,
+			ParentID:    401,
+			Score:       1,
+			Rating:      hypnohub.RatingExplicit,
+			Tags:        "solo hypnosis",
+			FileURL:     "https://hypnohub.net/images/401.jpg",
+			SampleURL:   "https://hypnohub.net/samples/401.jpg",
+			PreviewURL:  "https://hypnohub.net/thumbnails/401.jpg",
+			Width:       1000,
+			Height:      1500,
+			CreatedAt:   hypnohub.Date(now.Add(-7 * time.Hour)),
+			ChangedAt:   hypnohub.UnixTime(now.Add(-7 * time.Hour).Unix()),
+			Status:      "active",
+		},
+	}
+	if _, err := store.IngestBatch(ctx, selfLoopPost, now, now, now, 1, false); err != nil {
+		t.Fatalf("failed to ingest self loop post: %v", err)
+	}
+
+	p401, _, err := store.GetPost(ctx, 401)
+	if err != nil {
+		t.Fatalf("getting post 401: %v", err)
+	}
+	if p401.GroupID != 0 {
+		t.Errorf("self loop post: expected GroupID 0, got %d", p401.GroupID)
+	}
+	if p401.GroupPageCount != 1 {
+		t.Errorf("self loop post: expected GroupPageCount 1, got %d", p401.GroupPageCount)
+	}
+	if !p401.GroupIsLatest {
+		t.Errorf("self loop post: expected GroupIsLatest true")
+	}
+}
