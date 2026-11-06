@@ -587,6 +587,12 @@ func TestPWAManifestAndServiceWorker(t *testing.T) {
 	if !strings.Contains(shellBody, `AbortSignal.timeout`) {
 		t.Errorf("/static/shell.html missing AbortSignal.timeout")
 	}
+	if !strings.Contains(shellBody, `transitioned = true`) {
+		t.Errorf("/static/shell.html missing transitioned guard")
+	}
+	if !strings.Contains(shellBody, `removeEventListener("online", attemptTransition)`) {
+		t.Errorf("/static/shell.html missing removeEventListener for online event")
+	}
 
 	// Verify app.js contains controllerchange reload logic
 	appReq := httptest.NewRequest(http.MethodGet, "/static/app.js", nil)
@@ -642,6 +648,21 @@ func TestPWAManifestAndServiceWorker(t *testing.T) {
 		if !strings.Contains(rootBody, tag) {
 			t.Errorf("root HTML missing expected PWA tag %q", tag)
 		}
+	}
+
+	// 6. devMode generates stable hash from static directory
+	devSrv := NewServer(store, true)
+	devReq1 := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	devRec1 := httptest.NewRecorder()
+	devSrv.ServeHTTP(devRec1, devReq1)
+	devReq2 := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	devRec2 := httptest.NewRecorder()
+	devSrv.ServeHTTP(devRec2, devReq2)
+	if devRec1.Body.String() != devRec2.Body.String() {
+		t.Errorf("devMode /sw.js cache version changed between sequential requests without file modifications")
+	}
+	if !strings.Contains(devRec1.Body.String(), "dev-") {
+		t.Errorf("devMode /sw.js does not contain dev- prefix: %s", devRec1.Body.String())
 	}
 }
 

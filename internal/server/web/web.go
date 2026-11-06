@@ -575,16 +575,16 @@ var (
 	staticCacheHash  string
 )
 
-func computeStaticCacheHash() string {
+func computeStaticCacheHash(fsys fs.FS, strict bool) string {
 	h := sha256.New()
-	err := fs.WalkDir(staticFS, "static", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, "static", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		data, err := staticFS.ReadFile(path)
+		data, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
 		}
@@ -593,17 +593,20 @@ func computeStaticCacheHash() string {
 		return nil
 	})
 	if err != nil {
-		panic(fmt.Sprintf("failed to hash static files: %v", err))
+		if strict {
+			panic(fmt.Sprintf("pwa: failed hashing static assets: %v", err))
+		}
+		return "unhashed"
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 func getCacheVersion(devMode bool) string {
 	if devMode {
-		return fmt.Sprintf("dev-%d", time.Now().UnixNano())
+		return "dev-" + computeStaticCacheHash(devWebFS(), false)
 	}
 	cacheVersionOnce.Do(func() {
-		staticCacheHash = "hypnogaze-v-" + computeStaticCacheHash()
+		staticCacheHash = "hypnogaze-v-" + computeStaticCacheHash(staticFS, true)
 	})
 	return staticCacheHash
 }

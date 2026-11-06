@@ -1445,10 +1445,14 @@ function initPostDetail() {
 function registerServiceWorker() {
 	if (!("serviceWorker" in navigator)) return;
 
-	const hadController = !!navigator.serviceWorker.controller;
+	let hadController = !!navigator.serviceWorker.controller;
 	let refreshing = false;
 	navigator.serviceWorker.addEventListener("controllerchange", () => {
-		if (!refreshing && hadController) {
+		if (!hadController) {
+			hadController = true;
+			return;
+		}
+		if (!refreshing) {
 			refreshing = true;
 			window.location.reload();
 		}
