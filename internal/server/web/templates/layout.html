@@ -6,7 +6,39 @@
 	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b10" />
 	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f9" />
 	<meta name="referrer" content="same-origin" />
+	{{- if .RobotsMeta }}
+	<meta name="robots" content="{{ .RobotsMeta }}" />
+	{{- end }}
 	<title>{{ .Title }}</title>
+
+	{{- if .OpenGraph.Title }}
+	<meta property="og:site_name" content="hypnoview" />
+	<meta property="og:title" content="{{ .OpenGraph.Title }}" />
+	<meta property="og:description" content="{{ .OpenGraph.Description }}" />
+	<meta property="og:type" content="{{ .OpenGraph.Type }}" />
+	{{- if .OpenGraph.URL }}
+	<meta property="og:url" content="{{ .OpenGraph.URL }}" />
+	{{- end }}
+	{{- if .OpenGraph.Image }}
+	<meta property="og:image" content="{{ .OpenGraph.Image }}" />
+	{{- if .OpenGraph.ImageWidth }}
+	<meta property="og:image:width" content="{{ .OpenGraph.ImageWidth }}" />
+	<meta property="og:image:height" content="{{ .OpenGraph.ImageHeight }}" />
+	{{- end }}
+	{{- end }}
+	{{- if .OpenGraph.Video }}
+	<meta property="og:video" content="{{ .OpenGraph.Video }}" />
+	{{- if .OpenGraph.VideoType }}
+	<meta property="og:video:type" content="{{ .OpenGraph.VideoType }}" />
+	{{- end }}
+	{{- end }}
+	<meta name="twitter:card" content="{{ .OpenGraph.TwitterCard }}" />
+	<meta name="twitter:title" content="{{ .OpenGraph.Title }}" />
+	<meta name="twitter:description" content="{{ .OpenGraph.Description }}" />
+	{{- if .OpenGraph.Image }}
+	<meta name="twitter:image" content="{{ .OpenGraph.Image }}" />
+	{{- end }}
+	{{- end }}
 	<link rel="icon" href="/static/spiral.svg" type="image/svg+xml" />
 	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
 	<script>

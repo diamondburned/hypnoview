@@ -345,3 +345,126 @@ func TestTagSuggestionsEndpoint(t *testing.T) {
 		t.Errorf("expected empty body for short prefix, got: %s", rec.Body.String())
 	}
 }
+
+func TestRobotsTxtAndOpenGraph(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	posts := []hypnohub.Post{
+		{
+			ID:            1,
+			Score:         42,
+			Rating:        hypnohub.RatingSafe,
+			Tags:          "spiral trance hypnosis",
+			Width:         1280,
+			Height:        720,
+			FileURL:       "https://example.com/1.jpg",
+			SampleURL:     "https://example.com/sample_1.jpg",
+			PreviewURL:    "https://example.com/thumb_1.jpg",
+			PreviewWidth:  250,
+			PreviewHeight: 140,
+			CreatedAt:     hypnohub.Date(now),
+			Status:        "active",
+		},
+	}
+	if _, err := store.IngestBatch(ctx, posts, now, now, now, 1, false); err != nil {
+		t.Fatalf("IngestBatch failed: %v", err)
+	}
+
+	srv := New(store, nil)
+
+	// 1. /robots.txt
+	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Errorf("expected text/plain Content-Type, got: %s", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "GPTBot") || !strings.Contains(body, "Disallow: /*?") || !strings.Contains(body, "Allow: /api/") {
+		t.Errorf("robots.txt missing expected rules: %s", body)
+	}
+
+	// 2. / (clean root) has index, follow and OpenGraph tags
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if !strings.Contains(body, `<meta name="robots" content="index, follow" />`) {
+		t.Errorf("expected index, follow meta on root, got: %s", body)
+	}
+	if !strings.Contains(body, `property="og:site_name" content="hypnoview"`) {
+		t.Errorf("expected og:site_name on root, got: %s", body)
+	}
+	if !strings.Contains(body, `property="og:title" content="Hypnoview — Browse"`) {
+		t.Errorf("expected og:title on root, got: %s", body)
+	}
+
+	// 3. /?page=2 has noindex, follow
+	req = httptest.NewRequest(http.MethodGet, "/?page=2", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if !strings.Contains(body, `<meta name="robots" content="noindex, follow" />`) {
+		t.Errorf("expected noindex, follow meta on paginated page, got: %s", body)
+	}
+
+	// 4. /posts/1 has OpenGraph and Twitter card metadata
+	req = httptest.NewRequest(http.MethodGet, "/posts/1", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	body = rec.Body.String()
+	if !strings.Contains(body, `<meta name="robots" content="index, follow" />`) {
+		t.Errorf("expected index, follow on post detail, got: %s", body)
+	}
+	if !strings.Contains(body, `property="og:title" content="Post #1 (★ 42) — hypnoview"`) {
+		t.Errorf("expected og:title on post detail, got: %s", body)
+	}
+	if !strings.Contains(body, `name="twitter:card" content="summary_large_image"`) {
+		t.Errorf("expected twitter:card on post detail, got: %s", body)
+	}
+}
+
+func TestWebAPICORS(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer store.Close()
+
+	srv := New(store, nil)
+
+	// GET /api/v1/stats
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
+	}
+
+	// OPTIONS /api/v1/posts
+	req = httptest.NewRequest(http.MethodOptions, "/api/v1/posts", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content for OPTIONS, got %d", rec.Code)
+	}
+	if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,5 +119,43 @@ func TestRESTAPIEndpoints(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/openapi.json returned %d", rec.Code)
+	}
+}
+
+func TestAPICORS(t *testing.T) {
+	ctx := context.Background()
+	store, err := index.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	srv := NewServer(store)
+
+	// GET /api/v1/stats sets wildcard CORS
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
+	}
+
+	// OPTIONS /api/v1/posts preflight returns 204 No Content
+	req = httptest.NewRequest(http.MethodOptions, "/api/v1/posts", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content for OPTIONS, got %d", rec.Code)
+	}
+	if origin := rec.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got: %s", origin)
+	}
+	if methods := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(methods, "GET") {
+		t.Errorf("expected Access-Control-Allow-Methods to include GET, got: %s", methods)
 	}
 }

@@ -85,38 +85,58 @@ var tmplFuncs = template.FuncMap{
 	"isAnimatedExt": func(ext string) bool {
 		return ext == "mp4" || ext == "webm" || ext == "gif"
 	},
-	"thumbURL": func(p index.IndexedPost) string {
-		ext := strings.ToLower(p.FileExt)
-		sampleLower := strings.ToLower(p.SampleURL)
-		if ext == "mp4" || ext == "webm" || strings.HasSuffix(sampleLower, ".mp4") || strings.HasSuffix(sampleLower, ".webm") || p.SampleURL == "" {
-			return p.PreviewURL
-		}
-		return p.SampleURL
-	},
-	"thumbWidth": func(p index.IndexedPost) int {
-		ext := strings.ToLower(p.FileExt)
-		if ext == "mp4" || ext == "webm" || p.SampleWidth <= 0 {
-			if p.PreviewWidth > 0 {
-				return p.PreviewWidth
-			}
-			return 250
-		}
-		return p.SampleWidth
-	},
-	"thumbHeight": func(p index.IndexedPost) int {
-		ext := strings.ToLower(p.FileExt)
-		if ext == "mp4" || ext == "webm" || p.SampleHeight <= 0 {
-			if p.PreviewHeight > 0 {
-				return p.PreviewHeight
-			}
-			return 250
-		}
-		return p.SampleHeight
-	},
+	"thumbURL":    thumbURL,
+	"thumbWidth":  thumbWidth,
+	"thumbHeight": thumbHeight,
 	"json": func(v any) template.JS {
 		b, _ := json.Marshal(v)
 		return template.JS(b)
 	},
+}
+
+// OpenGraph contains OpenGraph and Twitter card metadata for HTML pages.
+type OpenGraph struct {
+	Title       string
+	Description string
+	Type        string
+	URL         string
+	Image       string
+	ImageWidth  int
+	ImageHeight int
+	Video       string
+	VideoType   string
+	TwitterCard string
+}
+
+func thumbURL(p index.IndexedPost) string {
+	ext := strings.ToLower(p.FileExt)
+	sampleLower := strings.ToLower(p.SampleURL)
+	if ext == "mp4" || ext == "webm" || strings.HasSuffix(sampleLower, ".mp4") || strings.HasSuffix(sampleLower, ".webm") || p.SampleURL == "" {
+		return p.PreviewURL
+	}
+	return p.SampleURL
+}
+
+func thumbWidth(p index.IndexedPost) int {
+	ext := strings.ToLower(p.FileExt)
+	if ext == "mp4" || ext == "webm" || p.SampleWidth <= 0 {
+		if p.PreviewWidth > 0 {
+			return p.PreviewWidth
+		}
+		return 250
+	}
+	return p.SampleWidth
+}
+
+func thumbHeight(p index.IndexedPost) int {
+	ext := strings.ToLower(p.FileExt)
+	if ext == "mp4" || ext == "webm" || p.SampleHeight <= 0 {
+		if p.PreviewHeight > 0 {
+			return p.PreviewHeight
+		}
+		return 250
+	}
+	return p.SampleHeight
 }
 
 func init() {
@@ -203,6 +223,9 @@ func NewServer(store *index.Store, logger *slog.Logger, devMode ...bool) *Server
 	s.mux.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/static/spiral.svg", http.StatusMovedPermanently)
 	})
+	s.mux.Get("/robots.txt", s.handleRobotsTxt)
+	api.RegisterRoutes(s.mux, s.store)
+
 	s.mux.Get("/", s.handleBrowse)
 	s.mux.Get("/popular", s.handlePopular)
 	s.mux.Get("/posts/{id}", s.handlePost)
@@ -318,6 +341,8 @@ type indexPageData struct {
 	HypnohubContinuationURL string
 	LastPostID              hypnohub.PostID
 	AllWindowURL            string
+	RobotsMeta              string
+	OpenGraph               OpenGraph
 }
 
 func (d indexPageData) IsTagActive(tag string) bool {
@@ -394,12 +419,14 @@ func (d indexPageData) urlWithTags(newTagsQuery string) string {
 }
 
 type postPageData struct {
-	Title     string
-	ActiveNav string
-	Post      index.IndexedPost
-	Snapshots []index.ScorePoint
-	Stats     index.Stats
-	BackURL   string
+	Title      string
+	ActiveNav  string
+	Post       index.IndexedPost
+	Snapshots  []index.ScorePoint
+	Stats      index.Stats
+	BackURL    string
+	RobotsMeta string
+	OpenGraph  OpenGraph
 }
 
 func (s *Server) handleTagSuggestions(w http.ResponseWriter, r *http.Request) {
@@ -485,16 +512,41 @@ func (s *Server) handleTagSuggestions(w http.ResponseWriter, r *http.Request) {
 	w.Write(buf.Bytes())
 }
 
+const robotsTxt = `User-agent: GPTBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: anthropic-ai
+User-agent: CCBot
+User-agent: Google-Extended
+User-agent: Bytespider
+User-agent: FacebookBot
+User-agent: PerplexityBot
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: *
+Allow: /$
+Allow: /popular$
+Allow: /posts/
+Allow: /api/
+Allow: /static/
+Disallow: /*?
+Disallow: /ui/
+Disallow: /
+`
+
+func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(robotsTxt))
+}
+
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	s.handleFeed(w, r, "browse")
 }
 
 func (s *Server) handlePopular(w http.ResponseWriter, r *http.Request) {
 	s.handleFeed(w, r, "popular")
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	s.handleBrowse(w, r)
 }
 
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string) {
@@ -764,6 +816,27 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request, mode string)
 		HypnohubContinuationURL: continuationURL,
 		LastPostID:              minPostID,
 		AllWindowURL:            "/?window=all&sort=new",
+		RobotsMeta:              "index, follow",
+		OpenGraph: OpenGraph{
+			Title:       pageTitle,
+			Description: fmt.Sprintf("Browse %s indexed Hypnohub posts with fast tag filtering.", formatInt(res.Total)),
+			Type:        "website",
+			URL:         r.URL.Path,
+			TwitterCard: "summary_large_image",
+		},
+	}
+
+	if page > 1 || tagsQuery != "" || r.URL.RawQuery != "" {
+		data.RobotsMeta = "noindex, follow"
+	}
+	if mode == "popular" {
+		data.OpenGraph.Description = "Trending Hypnohub posts ranked by score velocity and momentum."
+	}
+	if len(res.Posts) > 0 {
+		top := res.Posts[0]
+		data.OpenGraph.Image = thumbURL(top)
+		data.OpenGraph.ImageWidth = thumbWidth(top)
+		data.OpenGraph.ImageHeight = thumbHeight(top)
 	}
 
 	tmpl, err := s.getIndexTemplate()
@@ -821,12 +894,45 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	ogType := "article"
+	isVid := post.FileExt == "mp4" || post.FileExt == "webm"
+	if isVid {
+		ogType = "video.other"
+	}
+
+	tagsList := post.Tags
+	if len(tagsList) > 12 {
+		tagsList = tagsList[:12]
+	}
+	ogDesc := fmt.Sprintf("★ %d · %d×%d %s · Tags: %s", post.Score, post.Width, post.Height, strings.ToUpper(post.FileExt), strings.Join(tagsList, ", "))
+
+	postOG := OpenGraph{
+		Title:       fmt.Sprintf("Post #%d (★ %d) — hypnoview", post.ID, post.Score),
+		Description: ogDesc,
+		Type:        ogType,
+		URL:         fmt.Sprintf("/posts/%d", post.ID),
+		Image:       thumbURL(*post),
+		ImageWidth:  post.Width,
+		ImageHeight: post.Height,
+		TwitterCard: "summary_large_image",
+	}
+	if isVid {
+		postOG.Video = post.FileURL
+		if post.FileExt == "mp4" {
+			postOG.VideoType = "video/mp4"
+		} else {
+			postOG.VideoType = "video/webm"
+		}
+	}
+
 	data := postPageData{
-		Title:     fmt.Sprintf("Post #%d — Hypnoview", post.ID),
-		Post:      *post,
-		Snapshots: snapshots,
-		Stats:     *stats,
-		BackURL:   backURL,
+		Title:      fmt.Sprintf("Post #%d — Hypnoview", post.ID),
+		Post:       *post,
+		Snapshots:  snapshots,
+		Stats:      *stats,
+		BackURL:    backURL,
+		RobotsMeta: "index, follow",
+		OpenGraph:  postOG,
 	}
 
 	tmpl, err := s.getPostTemplate()

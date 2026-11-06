@@ -604,6 +604,9 @@ func TestBenchmark100kPosts(t *testing.T) {
 		Rating:    "",
 		MediaType: "",
 	})
+	if err != nil {
+		t.Fatalf("CountPostsAll failed: %v", err)
+	}
 	tCount := time.Since(t1)
 
 	t2 := time.Now()
@@ -615,6 +618,9 @@ func TestBenchmark100kPosts(t *testing.T) {
 		Limit:     48,
 		Offset:    0,
 	})
+	if err != nil {
+		t.Fatalf("ListPostsAllSortNew failed: %v", err)
+	}
 	tQuery := time.Since(t2)
 
 	t.Logf("Breakdown: refNow=%s, CountPostsAll=%s (total=%d), ListPostsAllSortNew=%s (rows=%d)",

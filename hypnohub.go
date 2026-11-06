@@ -1,10 +1,7 @@
 package hypnohub
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -287,50 +284,6 @@ func (d *Client) SearchTags(ctx context.Context, query string, afterID int) (*Se
 	slices.Reverse(resp.Tags)
 
 	return &SearchTagsResult{resp.Tags}, nil
-}
-
-func getJSON[T any](ctx context.Context, c *http.Client, url string) (*T, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	r, err := c.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get %s: %w", url, err)
-	}
-	defer r.Body.Close()
-
-	if r.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get %s: %s", url, r.Status)
-	}
-
-	// The Hypnohub API (which uses rule34.xxx/gelbooru) is so god awful that
-	// even when returning XML data, it still sets the Content-Type header to
-	// application/json.
-
-	rbuffered := bufio.NewReader(r.Body)
-	starting, err := rbuffered.Peek(len("<?xml"))
-	if err == nil && bytes.Equal(starting, []byte("<?xml")) {
-		var response struct {
-			Success *bool  `xml:"success,attr"`
-			Error   string `xml:"reason,attr"`
-		}
-		if err := xml.NewDecoder(rbuffered).Decode(&response); err != nil {
-			return nil, fmt.Errorf("failed to decode unexpected XML response: %w", err)
-		}
-		if response.Success != nil && !*response.Success {
-			return nil, fmt.Errorf("server error: %s", response.Error)
-		}
-		return nil, fmt.Errorf("server errored but did not provide a reason")
-	}
-
-	var v T
-	if err := json.NewDecoder(rbuffered).Decode(&v); err != nil {
-		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
-	}
-
-	return &v, nil
 }
 
 type xmlResponse struct {

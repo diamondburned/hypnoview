@@ -10,6 +10,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/go-chi/chi/v5"
 	"libdb.so/hypnoview"
 	"libdb.so/hypnoview/internal/index"
 )
@@ -19,6 +20,38 @@ type Server struct {
 	store *index.Store
 	mux   *http.ServeMux
 	api   huma.API
+}
+
+// CORSMiddleware sets wildcard CORS headers and handles preflight OPTIONS requests.
+func CORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RegisterRoutes mounts the REST API endpoints and OpenAPI/docs on the provided Chi router
+// with wildcard CORS enabled.
+func RegisterRoutes(r chi.Router, store *index.Store) {
+	srv := NewServer(store)
+	r.Route("/api", func(sub chi.Router) {
+		sub.Use(CORSMiddleware)
+		sub.HandleFunc("/*", srv.ServeHTTP)
+		sub.HandleFunc("/", srv.ServeHTTP)
+	})
+}
+
+// NewHandler initializes an http.Handler for the REST API with CORS enabled.
+func NewHandler(store *index.Store) http.Handler {
+	return NewServer(store)
 }
 
 // NewServer initializes the REST API Server wired to the local SQLite index Store.
@@ -39,9 +72,9 @@ func NewServer(store *index.Store) *Server {
 	return s
 }
 
-// ServeHTTP implements http.Handler.
+// ServeHTTP implements http.Handler with wildcard CORS middleware.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	CORSMiddleware(s.mux).ServeHTTP(w, r)
 }
 
 // ListPostsInput defines the query parameters for listing/ranking posts from the local index.
