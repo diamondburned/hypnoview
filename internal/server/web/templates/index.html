@@ -29,7 +29,7 @@
 						hx-params="tags"
 						hx-trigger="input changed delay:120ms"
 						hx-target="#tag-suggestions"
-						hx-swap="innerHTML"
+						hx-swap="innerHTML transition:false"
 						hx-sync="this:replace"
 					/>
 					{{ if .TagsQuery }}

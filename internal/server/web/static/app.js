@@ -795,6 +795,8 @@ function createZoomableMediaViewer(options) {
 	let pinchStartScale = 1;
 	let pinchCenterStageX = 0;
 	let pinchCenterStageY = 0;
+	let lastPointerX = null;
+	let lastPointerY = null;
 
 	function isVideo() {
 		return currentPost && (currentPost.ext === "mp4" || currentPost.ext === "webm");
@@ -809,6 +811,48 @@ function createZoomableMediaViewer(options) {
 		const nw = currentPost?.width || mediaEl?.naturalWidth || mediaEl?.videoWidth || 0;
 		const nh = currentPost?.height || mediaEl?.naturalHeight || mediaEl?.videoHeight || 0;
 		return { nw, nh };
+	}
+
+	function getScreenMediaRect() {
+		const mediaEl = getMediaElement();
+		if (!mediaEl) return null;
+		const bounds = getStageMediaBounds(stage);
+		const baseRect = getRenderedMediaRect(stage, mediaEl, currentPost?.width, currentPost?.height);
+		const halfW = (baseRect.width * scale) / 2;
+		const halfH = (baseRect.height * scale) / 2;
+		const centerX = bounds.centerX + translateX;
+		const centerY = bounds.centerY + translateY;
+		return {
+			left: centerX - halfW,
+			right: centerX + halfW,
+			top: centerY - halfH,
+			bottom: centerY + halfH,
+			width: halfW * 2,
+			height: halfH * 2
+		};
+	}
+
+	function isPointInMedia(clientX, clientY) {
+		const rect = getScreenMediaRect();
+		if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+		return (
+			clientX >= rect.left &&
+			clientX <= rect.right &&
+			clientY >= rect.top &&
+			clientY <= rect.bottom
+		);
+	}
+
+	function updateHoverCursor(clientX = lastPointerX, clientY = lastPointerY, target = null) {
+		if (clientX === null || clientY === null || isVideo()) {
+			stage.classList.remove("is-over-media");
+			return;
+		}
+		if (target && target.closest?.("button, a, input, video")) {
+			stage.classList.remove("is-over-media");
+			return;
+		}
+		stage.classList.toggle("is-over-media", isPointInMedia(clientX, clientY));
 	}
 
 	function updateTransform() {
@@ -841,6 +885,7 @@ function createZoomableMediaViewer(options) {
 				}
 			}
 		}
+		updateHoverCursor();
 	}
 
 	function clampTranslation() {
@@ -996,6 +1041,9 @@ function createZoomableMediaViewer(options) {
 	function onPointerDown(e) {
 		if (!isMediaActive()) return;
 		if (e.target.closest("button, a, input, video")) return;
+		lastPointerX = e.clientX;
+		lastPointerY = e.clientY;
+		if (e.pointerType === "mouse" && !isPointInMedia(e.clientX, e.clientY)) return;
 		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
 		if (activePointers.size === 1) {
@@ -1017,6 +1065,10 @@ function createZoomableMediaViewer(options) {
 	}
 
 	function onPointerMove(e) {
+		lastPointerX = e.clientX;
+		lastPointerY = e.clientY;
+		updateHoverCursor(e.clientX, e.clientY, e.target);
+
 		if (!activePointers.has(e.pointerId)) return;
 		activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -1039,12 +1091,19 @@ function createZoomableMediaViewer(options) {
 			const dy = e.clientY - startPointerY;
 			if (Math.hypot(dx, dy) > 5) {
 				didDrag = true;
+				stage.classList.add("is-dragging");
 			}
 			translateX = startTransX + dx;
 			translateY = startTransY + dy;
 			clampTranslation();
 			updateTransform();
 		}
+	}
+
+	function onPointerLeave() {
+		lastPointerX = null;
+		lastPointerY = null;
+		stage.classList.remove("is-over-media");
 	}
 
 	function onPointerUp(e) {
@@ -1056,6 +1115,7 @@ function createZoomableMediaViewer(options) {
 		}
 		if (activePointers.size === 0) {
 			isDragging = false;
+			stage.classList.remove("is-dragging");
 			if (scale <= 1.05) {
 				resetZoom();
 			}
@@ -1073,14 +1133,9 @@ function createZoomableMediaViewer(options) {
 			return;
 		}
 
-		const mediaEl = getMediaElement();
-		const mediaRect = mediaEl ? getRenderedMediaRect(stage, mediaEl, currentPost?.width, currentPost?.height) : null;
-		const clickedOutsideMedia = mediaRect ? (
-			e.clientX < mediaRect.left ||
-			e.clientX > mediaRect.right ||
-			e.clientY < mediaRect.top ||
-			e.clientY > mediaRect.bottom
-		) : true;
+		lastPointerX = e.clientX;
+		lastPointerY = e.clientY;
+		const clickedOutsideMedia = !isPointInMedia(e.clientX, e.clientY);
 
 		if (clickedOutsideMedia && onOutsideClick) {
 			onOutsideClick();
@@ -1141,12 +1196,18 @@ function createZoomableMediaViewer(options) {
 		}
 	}
 
+	function onWindowResize() {
+		updateHoverCursor();
+	}
+
 	stage.addEventListener("pointerdown", onPointerDown);
 	stage.addEventListener("pointermove", onPointerMove);
+	stage.addEventListener("pointerleave", onPointerLeave);
 	stage.addEventListener("pointerup", onPointerUp);
 	stage.addEventListener("pointercancel", onPointerUp);
 	stage.addEventListener("click", onStageClick);
 	stage.addEventListener("wheel", onWheel, { passive: false });
+	window.addEventListener("resize", onWindowResize, { passive: true });
 	zoomToggleBtn?.addEventListener("click", onZoomToggleClick);
 	hdToggleBtn?.addEventListener("click", onHdToggleClick);
 
@@ -1156,10 +1217,12 @@ function createZoomableMediaViewer(options) {
 		destroy: () => {
 			stage.removeEventListener("pointerdown", onPointerDown);
 			stage.removeEventListener("pointermove", onPointerMove);
+			stage.removeEventListener("pointerleave", onPointerLeave);
 			stage.removeEventListener("pointerup", onPointerUp);
 			stage.removeEventListener("pointercancel", onPointerUp);
 			stage.removeEventListener("click", onStageClick);
 			stage.removeEventListener("wheel", onWheel);
+			window.removeEventListener("resize", onWindowResize);
 			zoomToggleBtn?.removeEventListener("click", onZoomToggleClick);
 			hdToggleBtn?.removeEventListener("click", onHdToggleClick);
 		},
@@ -1169,8 +1232,26 @@ function createZoomableMediaViewer(options) {
 
 let currentDetailViewer = null;
 let overlayToken = 0;
+let pendingOverlayOpen = false;
+let overlayClosing = false;
 let overlayFeedTitle = "";
 let overlayReturnFocus = null;
+
+function runWithViewTransition(mutate) {
+	if (
+		typeof document.startViewTransition === "function" &&
+		!window.matchMedia("(prefers-reduced-motion: reduce)").matches
+	) {
+		try {
+			return document.startViewTransition(mutate);
+		} catch (_) {
+			mutate();
+			return null;
+		}
+	}
+	mutate();
+	return null;
+}
 
 function setSheetExpanded(expanded) {
 	const sidebar = document.getElementById("post-sidebar");
@@ -1192,9 +1273,12 @@ function setSheetExpanded(expanded) {
 }
 
 function closePostOverlay(fromPopState = false) {
-	if (!document.body.classList.contains("has-post-overlay")) return;
+	if (overlayClosing) return;
+	if (!document.body.classList.contains("has-post-overlay") && !pendingOverlayOpen) return;
 
-	overlayToken++;
+	overlayClosing = true;
+	const closeToken = ++overlayToken;
+	pendingOverlayOpen = false;
 
 	if (currentDetailViewer) {
 		currentDetailViewer.destroy();
@@ -1202,39 +1286,48 @@ function closePostOverlay(fromPopState = false) {
 	}
 
 	const slot = document.getElementById("post-overlay-slot");
-	if (slot) {
-		slot.innerHTML = "";
-	}
-	document.body.classList.remove("has-post-overlay");
 
-	document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
-		el.inert = false;
+	runWithViewTransition(() => {
+		if (closeToken !== overlayToken) return;
+		overlayClosing = false;
+		if (slot) {
+			slot.innerHTML = "";
+		}
+		document.body.classList.remove("has-post-overlay");
+
+		document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
+			el.inert = false;
+		});
+
+		if (overlayFeedTitle) {
+			document.title = overlayFeedTitle;
+			overlayFeedTitle = "";
+		}
+
+		if (overlayReturnFocus) {
+			overlayReturnFocus.focus({ preventScroll: true });
+			overlayReturnFocus = null;
+		}
+
+		updateSingleColumnAutoplay();
 	});
-
-	if (overlayFeedTitle) {
-		document.title = overlayFeedTitle;
-		overlayFeedTitle = "";
-	}
-
-	if (overlayReturnFocus) {
-		overlayReturnFocus.focus({ preventScroll: true });
-		overlayReturnFocus = null;
-	}
-
-	updateSingleColumnAutoplay();
 
 	if (!fromPopState && window.history.state?.postOverlay) {
 		window.history.back();
 	}
 }
 
-async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, isGrouped = false } = {}) {
+async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, groupCount = 0 } = {}) {
 	const slot = document.getElementById("post-overlay-slot");
 	if (!slot) return;
 
 	const token = ++overlayToken;
+	overlayClosing = false;
+	const wasAlreadyOpen = document.body.classList.contains("has-post-overlay") || pendingOverlayOpen;
+	pendingOverlayOpen = true;
+	const isGrouped = groupCount > 1;
 
-	if (!document.body.classList.contains("has-post-overlay")) {
+	if (!wasAlreadyOpen) {
 		overlayFeedTitle = document.title;
 		overlayReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 	}
@@ -1244,42 +1337,59 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, isGrou
 		vid.pause();
 	});
 
-	document.body.classList.add("has-post-overlay");
-
-	document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
-		el.inert = true;
-	});
-
 	if (push) {
-		window.history.pushState({ postOverlay: true, url: targetUrl }, "", targetUrl);
+		if (window.history.state?.postOverlay && window.history.state?.url === targetUrl) {
+			window.history.replaceState({ postOverlay: true, url: targetUrl }, "", targetUrl);
+		} else {
+			window.history.pushState({ postOverlay: true, url: targetUrl }, "", targetUrl);
+		}
 	}
 
-	// Immediate subtle loading state / thumbnail if available
-	if (initialThumbSrc) {
-		slot.innerHTML = `
-			<div class="post-detail" id="post-detail">
-				<div class="post-detail-nav">
-					<button type="button" class="page-btn post-back-btn" id="post-back-btn">← Back to Feed</button>
-				</div>
-				<div class="post-detail-grid">
-					<div class="post-media-column">
-						<div class="post-media-box media-viewer-stage${isGrouped ? " is-grouped" : ""}" id="post-stage">
-							<div class="media-wrap">
-								<div class="progressive-media-container">
-									<img class="img-preview" src="${initialThumbSrc}" alt="" referrerpolicy="no-referrer" />
+	const placeholderDots = isGrouped
+		? `<div class="post-group-dots" id="post-group-switcher" aria-hidden="true">${'<span class="group-page-dot"></span>'.repeat(Math.min(groupCount, 24))}</div>`
+		: "";
+
+	const renderInitialOverlay = () => {
+		if (token !== overlayToken) return;
+		document.body.classList.add("has-post-overlay");
+
+		document.querySelectorAll("main, .topbar, footer.footer").forEach((el) => {
+			el.inert = true;
+		});
+
+		if (initialThumbSrc) {
+			slot.innerHTML = `
+				<div class="post-detail" id="post-detail">
+					<div class="post-detail-nav">
+						<button type="button" class="page-btn post-back-btn" id="post-back-btn">← Back to Feed</button>
+					</div>
+					<div class="post-detail-grid">
+						<div class="post-media-column">
+							<div class="post-media-box media-viewer-stage${isGrouped ? " is-grouped" : ""}" id="post-stage">
+								<div class="media-wrap">
+									<div class="progressive-media-container">
+										<img class="img-preview" src="${initialThumbSrc}" alt="" referrerpolicy="no-referrer" />
+									</div>
 								</div>
 							</div>
+							${placeholderDots}
 						</div>
+						<aside class="post-sidebar" id="post-sidebar" aria-hidden="true"></aside>
 					</div>
-				</div>
-			</div>`;
-	} else {
-		slot.innerHTML = `
-			<div class="post-detail" id="post-detail">
-				<div class="post-detail-nav">
-					<button type="button" class="page-btn post-back-btn" id="post-back-btn">← Back to Feed</button>
-				</div>
-			</div>`;
+				</div>`;
+		} else {
+			slot.innerHTML = `
+				<div class="post-detail" id="post-detail">
+					<div class="post-detail-nav">
+						<button type="button" class="page-btn post-back-btn" id="post-back-btn">← Back to Feed</button>
+					</div>
+				</div>`;
+		}
+	};
+
+	const openTransition = wasAlreadyOpen ? null : runWithViewTransition(renderInitialOverlay);
+	if (wasAlreadyOpen) {
+		renderInitialOverlay();
 	}
 
 	try {
@@ -1300,6 +1410,12 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, isGrou
 			return;
 		}
 
+		// Wait for startViewTransition's updateCallbackDone so renderInitialOverlay
+		// never runs after slot.replaceChildren(detail) and overwrites the fetched post.
+		await openTransition?.updateCallbackDone?.catch(() => {});
+		if (token !== overlayToken) return;
+		pendingOverlayOpen = false;
+
 		const pageTitle = doc.querySelector("title")?.textContent;
 		if (pageTitle) {
 			document.title = pageTitle;
@@ -1311,6 +1427,19 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, isGrou
 			incomingPreview.replaceWith(existingPreview);
 		}
 
+		if (
+			!wasAlreadyOpen &&
+			window.matchMedia("(min-width: 901px) and (prefers-reduced-motion: no-preference)").matches
+		) {
+			const sidebarEl = detail.querySelector(".post-sidebar");
+			if (sidebarEl) {
+				sidebarEl.classList.add("is-entering");
+				sidebarEl.addEventListener("animationend", () => {
+					sidebarEl.classList.remove("is-entering");
+				}, { once: true });
+			}
+		}
+
 		slot.replaceChildren(detail);
 		if (window.htmx) {
 			window.htmx.process(slot);
@@ -1319,6 +1448,7 @@ async function openPostOverlay(targetUrl, initialThumbSrc, { push = true, isGrou
 		document.getElementById("post-back-btn")?.focus({ preventScroll: true });
 	} catch (err) {
 		if (token !== overlayToken) return;
+		pendingOverlayOpen = false;
 		console.error("Failed to load post detail:", err);
 		window.location.href = targetUrl;
 	}
@@ -1512,6 +1642,17 @@ function initPostDetail() {
 
 	initBottomSheet();
 	initStageTouchSwipe(postStage);
+
+	const switcher = document.getElementById("post-group-switcher");
+	const activeDot = switcher?.querySelector(".group-page-dot.active");
+	if (switcher && activeDot) {
+		if (switcher.scrollWidth > switcher.clientWidth) {
+			switcher.scrollLeft = activeDot.offsetLeft - switcher.clientWidth / 2 + activeDot.offsetWidth / 2;
+		}
+		if (switcher.scrollHeight > switcher.clientHeight) {
+			switcher.scrollTop = activeDot.offsetTop - switcher.clientHeight / 2 + activeDot.offsetHeight / 2;
+		}
+	}
 }
 
 
@@ -1598,7 +1739,7 @@ function attachGlobalListeners() {
 	}, { passive: true });
 
 	window.addEventListener("popstate", (e) => {
-		const open = document.body.classList.contains("has-post-overlay");
+		const open = document.body.classList.contains("has-post-overlay") || pendingOverlayOpen;
 		if (open && !e.state?.postOverlay) {
 			closePostOverlay(true);
 		} else if (!open && e.state?.postOverlay && e.state.url) {
@@ -1622,7 +1763,7 @@ function attachGlobalListeners() {
 				return;
 			}
 
-			if (document.body.classList.contains("has-post-overlay")) {
+			if (document.body.classList.contains("has-post-overlay") || pendingOverlayOpen) {
 				e.preventDefault();
 				closePostOverlay(false);
 				return;
@@ -1659,6 +1800,19 @@ function attachGlobalListeners() {
 			return;
 		}
 
+		// HTMX binds swapped-in group links only at settle; prevent clicks during the
+		// pre-settle window from falling through to a full-page browser navigation.
+		if (
+			!e.metaKey &&
+			!e.ctrlKey &&
+			!e.shiftKey &&
+			e.button === 0 &&
+			e.target.closest("#post-detail a[hx-get]")
+		) {
+			e.preventDefault();
+			return;
+		}
+
 		const cardLink = e.target.closest(".card-media-link, .card-id");
 		if (cardLink) {
 			if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -1669,8 +1823,8 @@ function attachGlobalListeners() {
 			const card = cardLink.closest(".post-card");
 			const thumbImg = card?.querySelector(".card-media-link img");
 			const thumbSrc = thumbImg?.currentSrc || thumbImg?.src || "";
-			const isGrouped = !!card?.querySelector(".badge-pages");
-			openPostOverlay(cardLink.href, thumbSrc, { isGrouped });
+			const groupCount = parseInt(card?.dataset.groupCount || "1", 10) || 1;
+			openPostOverlay(cardLink.href, thumbSrc, { groupCount });
 			return;
 		}
 
@@ -1696,6 +1850,24 @@ function attachGlobalListeners() {
 			document.querySelectorAll("[data-tooltip].is-tooltip-open").forEach((el) => {
 				el.classList.remove("is-tooltip-open");
 			});
+		}
+	});
+
+	let groupTransitionTimer = 0;
+
+	document.addEventListener("htmx:beforeTransition", (e) => {
+		if (e.detail?.target?.id === "post-detail" || e.detail?.target?.closest?.("#post-detail")) {
+			clearTimeout(groupTransitionTimer);
+			document.documentElement.classList.add("is-group-transitioning");
+		}
+	});
+
+	document.addEventListener("htmx:afterSettle", (e) => {
+		if (e.detail?.target?.id === "post-detail" || e.detail?.target?.closest?.("#post-detail")) {
+			clearTimeout(groupTransitionTimer);
+			groupTransitionTimer = setTimeout(() => {
+				document.documentElement.classList.remove("is-group-transitioning");
+			}, 300);
 		}
 	});
 

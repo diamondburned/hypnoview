@@ -34,7 +34,7 @@
 					hx-get="/posts/{{ .PrevGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 					hx-target="#post-detail"
 					hx-select="#post-detail"
-					hx-swap="outerHTML show:none"
+					hx-swap="outerHTML show:none transition:true"
 				><span class="material-symbols-rounded" aria-hidden="true">chevron_left</span></a>
 				{{ end }}
 				{{ if .NextGroupPostID }}
@@ -47,7 +47,7 @@
 					hx-get="/posts/{{ .NextGroupPostID }}{{ if and .BackURL (ne .BackURL "/") }}?back={{ urlquery .BackURL }}{{ end }}"
 					hx-target="#post-detail"
 					hx-select="#post-detail"
-					hx-swap="outerHTML show:none"
+					hx-swap="outerHTML show:none transition:true"
 				><span class="material-symbols-rounded" aria-hidden="true">chevron_right</span></a>
 				{{ end }}
 				{{ end }}
@@ -96,7 +96,7 @@
 					hx-get="/posts/{{ $gp.ID }}{{ if and $.BackURL (ne $.BackURL "/") }}?back={{ urlquery $.BackURL }}{{ end }}"
 					hx-target="#post-detail"
 					hx-select="#post-detail"
-					hx-swap="outerHTML show:none"
+					hx-swap="outerHTML show:none transition:true"
 				><span class="sr-only">Page {{ $pageNo }}</span></a>
 				{{ end }}
 			</div>

@@ -6,7 +6,7 @@
 	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b10" />
 	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f9" />
 	<meta name="referrer" content="same-origin" />
-	<meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true}' />
+	<meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true,"globalViewTransitions":true}' />
 	{{- if .RobotsMeta }}
 	<meta name="robots" content="{{ .RobotsMeta }}" />
 	{{- end }}
@@ -330,7 +330,7 @@
 							hx-params="q"
 							hx-trigger="input changed delay:120ms"
 							hx-target="#blocklist-suggestions"
-							hx-swap="innerHTML"
+							hx-swap="innerHTML transition:false"
 							hx-sync="this:replace"
 						/>
 						<button type="button" id="blocklist-add-btn" class="page-btn blocklist-add-btn">Add</button>
