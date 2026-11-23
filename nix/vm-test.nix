@@ -62,5 +62,10 @@ pkgs.testers.runNixOSTest {
 
     # 5. /var/lib/hypnogaze/hypnogaze.db exists on disk inside the VM
     machine.succeed("test -f /var/lib/hypnogaze/hypnogaze.db")
+
+    # 6. Structured journal logs are emitted via slog-journal
+    journal_out = machine.succeed("journalctl -u hypnogaze.service -o json --no-pager")
+    assert '"ADDR":"127.0.0.1:8080"' in journal_out, f"missing structured ADDR field in journal: {journal_out[:500]}"
+    assert '"SERVICE":"http"' in journal_out, f"missing structured SERVICE=http field in journal: {journal_out[:500]}"
   '';
 }

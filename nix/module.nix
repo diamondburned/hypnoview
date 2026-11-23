@@ -74,6 +74,8 @@ in
       wants = [ "network-online.target" ];
 
       serviceConfig = {
+        Environment = [ "SLOG_JOURNAL=1" ];
+
         ExecStart = lib.escapeShellArgs (
           [
             (lib.getExe cfg.package)
@@ -102,7 +104,9 @@ in
         ProtectSystem = "strict";
         ProtectHome = true;
         ReadWritePaths = lib.optional (
-          !lib.hasPrefix (if isGaze then "/var/lib/hypnogaze/" else "/var/lib/hypnoview/") (toString cfg.databasePath)
+          !lib.hasPrefix (if isGaze then "/var/lib/hypnogaze/" else "/var/lib/hypnoview/") (
+            toString cfg.databasePath
+          )
         ) (builtins.dirOf (toString cfg.databasePath));
       };
     };

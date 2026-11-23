@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/go-chi/httplog/v2"
 	"github.com/lmittmann/tint"
 	"github.com/spf13/pflag"
+	slogjournal "github.com/systemd/slog-journal"
 	"libdb.so/hserve"
 )
 
@@ -55,11 +58,11 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
-	logger := slog.New(tint.NewHandler(os.Stderr, &tint.Options{
-		Level:   logLevel,
-		NoColor: false,
-	}))
+	logger, err := newLogger(logLevel)
 	slog.SetDefault(logger)
+	if err != nil {
+		logger.Warn("failed to initialize journal logger, falling back to stderr", "error", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -119,14 +122,17 @@ func main() {
 
 	webServer := web.NewServer(store, opts.devMode)
 
-	reqLogger := httplog.NewLogger("http", httplog.Options{
-		LogLevel: logLevel,
-		QuietDownRoutes: []string{
-			"/static/",
-			"/api/v1/tags",
+	reqLogger := &httplog.Logger{
+		Logger: logger.With("service", "http"),
+		Options: httplog.Options{
+			LogLevel: logLevel,
+			QuietDownRoutes: []string{
+				"/static/",
+				"/api/v1/tags",
+			},
+			QuietDownPeriod: 10 * time.Second,
 		},
-		QuietDownPeriod: 10 * time.Second,
-	})
+	}
 
 	srv := &http.Server{
 		Addr:              opts.listenAddr,
@@ -146,4 +152,42 @@ func main() {
 		logger.Error("server exited with error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func newLogger(level slog.Level) (*slog.Logger, error) {
+	if useJournal, _ := strconv.ParseBool(os.Getenv("SLOG_JOURNAL")); useJournal {
+		jh, err := slogjournal.NewHandler(&slogjournal.Options{
+			Level:        level,
+			ReplaceGroup: journalKey,
+			ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+				a.Key = journalKey(a.Key)
+				return a
+			},
+		})
+		if err == nil {
+			return slog.New(jh), nil
+		}
+		return slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+			Level:   level,
+			NoColor: false,
+		})), err
+	}
+
+	return slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+		Level:   level,
+		NoColor: false,
+	})), nil
+}
+
+func journalKey(k string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r - ('a' - 'A')
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, k)
 }
